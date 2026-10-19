@@ -594,14 +594,36 @@ library rather than with itself:
   1080p straight-alpha frame and both passes run threaded (6.3). Each HX output still copies its
   picture to the encoder, and each HX source copies it back from the D3D11 decoder (about
   4 to 7 ms of decode and copy at 1080p on the test PC, shared by the source's outputs).
-  There is **no scale target in v1** and no GPU colour path; M2 measures the bridge's own
-  per-output cost and documents it.
+  There is **no scale target in v1** and no GPU colour path.
+
+  **Measured, M2 (2026-10-20).** `scripts/m2-e2e.ps1` on the test PC (AMD Ryzen 7 5700X,
+  8C/16T; Radeon RX 6600 via AMF; Windows 11 Pro; OMT-HX `ae96aa1`) sent 1920x1080p60
+  alpha through `omthx-send` -> engine -> `omthx-recv`, one OMT-HX output, for 12 s.
+  Across two runs the engine used **17.2-18.1 s of CPU over 12.11 s wall (1.42-1.49
+  cores), or 23.7-24.9 ms of CPU per output frame at 60 fps**. That is the whole bridge
+  cost for one output -- source decode, the UYVY copy and encode -- not an encode-only
+  figure. A per-output CPU split needs a profiler and is not measured; the 2- and
+  4-output points and a non-alpha baseline are also unmeasured, with alpha being the
+  heavier case. Commands: `omthx-send --name ... --mode hx --codec hevc --size
+  1920x1080 --fps 60 --alpha --seconds 16`, the engine with `--port <free> --token <tag>
+  --bridge <generated bridge.json>`, then `omthx-recv --source "HOST (Bridge (Out))"
+  --seconds 12 --dump frame.bmp`.
 - **HX hop latency and ceiling.** On OMT-HX's "sender and receiver on one PC" run, the
   case closest to the bridge's decode and encode in one process, a hop measured 10 ms at
   720p60, 15 ms at 1080p60 and 27 ms at 1080p60 alpha, all holding real time; 1440p60 and
   1080p120 hold too, 4K reaches about 43 fps (OMT-HX `docs/MEASUREMENTS.md`, 2026-10-19,
   BGRA path; before that work 1080p60 alpha received a median of 57 fps). M2 re-measures
   on the bridge's UYVY path.
+
+  **Measured, M2 (same 1-output runs).** The bridge held real time at 1080p60 alpha:
+  `omthx-recv` reported 58-62 fps after the first (keyframe-wait) second, 56.8-57.4 fps
+  averaged over all 12 s, at **31.53-31.80 Mbps** on the wire. Receiver decode measured
+  12.5-19.2 ms per frame. End-to-end delay, from the sender's timestamp to the receiver's
+  clock across both HX hops, moved between **59 and 195 ms average per second, with
+  per-second maxima up to 202 ms**; it did not settle at one value and both runs ended
+  higher than they began. That figure includes the sender's and receiver's own
+  encode/decode, so it is a chain figure rather than the bridge's own latency. 1440p, 4K,
+  longer soaks and the 2/4-output points remain unmeasured.
 - **No NDI|HX output** (NDI Advanced SDK).
 - **NDI|HX input alpha is present only when the HX sender stacks it** (NDI Bridge,
   TriCaster, Vectar Plus, Vizrt Connect); most HX cameras send none. When present, the NDI
