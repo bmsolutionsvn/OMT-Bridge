@@ -7,6 +7,7 @@ add_compile_options(/W4 /permissive- /utf-8 /EHsc)
 add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 
 find_package(doctest CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 # FFmpeg comes from vcpkg; its ffmpeg package provides FindFFMPEG.cmake, so no module is vendored.
 find_package(FFMPEG REQUIRED)
@@ -33,15 +34,26 @@ if(OB_WITH_NDI AND NOT NDI_FOUND)
 endif()
 message(STATUS "OB_WITH_NDI=${OB_WITH_NDI}")
 
+# ---- core ----
+# The shared, UI-free core library. Every later task adds its .cpp to this list.
+add_library(ob_core STATIC
+  src/core/signal_state.cpp
+)
+target_include_directories(ob_core PUBLIC src)
+# PUBLIC: signal_state.h includes <nlohmann/json.hpp>, and every later core header that
+# does the same must pass that include path on to whoever links ob_core.
+target_link_libraries(ob_core PUBLIC nlohmann_json::nlohmann_json)
+
 # ---- tests ----
-# ob_core is created in Task 6; until then ob_tests links only doctest and omthx.
 add_executable(ob_tests
   tests/main.cpp
   tests/frame_test.cpp
+  tests/signal_state_test.cpp
 )
 target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
 target_link_libraries(ob_tests PRIVATE omthx)
+target_link_libraries(ob_tests PRIVATE ob_core)
 ob_copy_runtime(ob_tests)
 
 # ---- shells ----
