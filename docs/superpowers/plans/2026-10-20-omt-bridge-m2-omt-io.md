@@ -1033,7 +1033,7 @@ static ob::Output output(ob::OutputTarget target, ob::HxCodec codec, ob::AlphaMo
 }
 
 TEST_CASE("alpha follows the source under Auto, and is dropped under Off") {
-  TestSink autoSink(output(ob::OutputTarget::OmtHx, ob::HxCodec::Hevc, ob::AlphaMode::Auto));
+  TestSink autoSink;
   autoSink.configure(output(ob::OutputTarget::OmtHx, ob::HxCodec::Hevc, ob::AlphaMode::Auto), "B (A)");
   auto frame = std::make_shared<ob::Frame>();
   frame->format = ob::VideoFormat{4, 2, 60, 1, true};
@@ -1042,7 +1042,7 @@ TEST_CASE("alpha follows the source under Auto, and is dropped under Off") {
   REQUIRE(autoSink.sent.size() == 1u);
   CHECK(autoSink.sent[0].alpha);
 
-  TestSink offSink(output(ob::OutputTarget::OmtHx, ob::HxCodec::Hevc, ob::AlphaMode::Off));
+  TestSink offSink;
   offSink.configure(output(ob::OutputTarget::OmtHx, ob::HxCodec::Hevc, ob::AlphaMode::Off), "B (A)");
   offSink.deliver(frame);
   REQUIRE(offSink.sent.size() == 1u);
@@ -1050,7 +1050,7 @@ TEST_CASE("alpha follows the source under Auto, and is dropped under Off") {
 }
 
 TEST_CASE("H.264 above 1080p drops alpha and says why") {
-  TestSink sink(output(ob::OutputTarget::OmtHx, ob::HxCodec::H264, ob::AlphaMode::Auto));
+  TestSink sink;
   sink.configure(output(ob::OutputTarget::OmtHx, ob::HxCodec::H264, ob::AlphaMode::Auto), "B (A)");
   auto frame = std::make_shared<ob::Frame>();
   frame->format = ob::VideoFormat{1920, 2160, 60, 1, true};
@@ -1062,7 +1062,7 @@ TEST_CASE("H.264 above 1080p drops alpha and says why") {
 }
 
 TEST_CASE("an OMT-HX output of 1080p or less keeps H.264 alpha") {
-  TestSink sink(output(ob::OutputTarget::OmtHx, ob::HxCodec::H264, ob::AlphaMode::Auto));
+  TestSink sink;
   sink.configure(output(ob::OutputTarget::OmtHx, ob::HxCodec::H264, ob::AlphaMode::Auto), "B (A)");
   auto frame = std::make_shared<ob::Frame>();
   frame->format = ob::VideoFormat{1920, 1080, 60, 1, true};
@@ -1147,19 +1147,8 @@ omthx::Codec codecOf(HxCodec c) { return c == HxCodec::H264 ? omthx::Codec::H264
 
 OmtSink::~OmtSink() = default;
 
-void OmtSink::configure(const Output& output, const std::string& advertisedName) {
-  std::lock_guard l(mu_);
-  const bool unchanged = sender_ && NameSame() /* see below */;
-  (void)unchanged;
-  config_ = output;
-  name_ = advertisedName;
-  openLocked();  // recreates the sender when the target/codec/quality/name changed
-}
-```
-
-Because a `Sender` cannot be reconfigured, `configure` simply **closes and reopens** when anything relevant changed, comparing against the previously stored config:
-
-```cpp
+// A Sender cannot be reconfigured, so configure() closes and reopens when anything relevant
+// changed, comparing against the previously stored config.
 void OmtSink::configure(const Output& output, const std::string& advertisedName) {
   std::lock_guard l(mu_);
   const bool same = sender_ && config_.target == output.target && config_.codec == output.codec &&
@@ -1184,12 +1173,13 @@ void OmtSink::openLocked() {
 }
 
 void OmtSink::deliver(const std::shared_ptr<const Frame>& frame) {
-  if (!frame) return;
+  if (!frame || !frame->valid()) return;  // never index a plane the frame does not have
   std::lock_guard l(mu_);
   if (!sender_ || !sender_->sender) return;
 
   bool alpha = frame->format.alpha && config_.alpha != AlphaMode::Off;
-  if (alpha && config_.codec == HxCodec::H264 && frame->format.height > 1080) {
+  if (alpha && config_.target == OutputTarget::OmtHx && config_.codec == HxCodec::H264 &&
+      frame->format.height > 1080) {
     alpha = false;
     note_ = "alpha dropped — H.264 above 1080p, use HEVC";
   }
