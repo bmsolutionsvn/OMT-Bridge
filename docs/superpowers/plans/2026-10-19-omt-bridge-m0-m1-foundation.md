@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-19-omt-bridge-design.md`. Workspace-relative sibling checkouts: `OMT-HX`, `BreadCamera` (the source of lifted modules).
 
-> **Prerequisite for every task:** run commands from a **Visual Studio developer shell** (`Launch-VsDevShell.ps1 -Arch amd64`) with `VCPKG_ROOT` set. All paths below are relative to the `OMT-Bridge` repository root unless they start with a sibling repo name.
+> **Prerequisite for every task (amended 2026-10-19):** run every build and test through `scripts/test.ps1` (or `scripts/build.ps1`). Those scripts activate the MSVC developer shell and set `VCPKG_ROOT` themselves, because this machine has **no developer shell on PATH** by default — `cmake`, `ninja` and `VCPKG_ROOT` are only present inside one. The `cmake --preset release` lines shown inside each task are exactly what those scripts run; **run the script, not the raw lines**. All paths are relative to the `OMT-Bridge` repository root unless they start with a sibling repo name (for example `..\BreadCamera`).
 
 ---
 
@@ -83,13 +83,12 @@ v1 is a local converter/proxy; the WAN tunnel (Host/Join) is v2.
 
 ## Build
 
-Needs Windows x64, Visual Studio 2022 or newer, the .NET 8 SDK, git, and vcpkg
-(`VCPKG_ROOT` set). Run from a VS developer shell.
+Needs Windows x64, Visual Studio 2022 or newer, the .NET 8 SDK and git. vcpkg is found from
+the Visual Studio install.
 
 ```powershell
 git clone --recurse-submodules https://github.com/bmsolutionsvn/OMT-Bridge
-cmake --preset release
-cmake --build --preset release
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
 ```
 
 ## Licence
@@ -97,11 +96,49 @@ cmake --build --preset release
 MIT.
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Write `scripts/build.ps1`**
+
+Adapted from `OMT-HX/scripts/build.ps1`. It exists so a build never depends on the caller having started a developer shell.
+
+```powershell
+param([ValidateSet('release', 'debug')][string]$Preset = 'release')
+$ErrorActionPreference = 'Stop'
+$root = Split-Path $PSScriptRoot -Parent
+git -C $root submodule update --init
+if ($LASTEXITCODE) { exit $LASTEXITCODE }
+# The developer shell calls vswhere.exe by name, so its folder must be on PATH.
+$installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+$env:PATH = "$installer;$env:PATH"
+$vs = & "$installer\vswhere.exe" -latest -products * -property installationPath
+& "$vs\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
+if (-not $env:VCPKG_ROOT) { $env:VCPKG_ROOT = "$vs\VC\vcpkg" }
+Set-Location $root
+cmake --preset $Preset
+if ($LASTEXITCODE) { exit $LASTEXITCODE }
+cmake --build --preset $Preset
+exit $LASTEXITCODE
+```
+
+- [ ] **Step 5: Write `scripts/test.ps1`**
+
+```powershell
+param(
+  [ValidateSet('release', 'debug')][string]$Preset = 'release',
+  [string]$Filter = ''
+)
+$ErrorActionPreference = 'Stop'
+& (Join-Path $PSScriptRoot 'build.ps1') -Preset $Preset
+if ($LASTEXITCODE) { exit $LASTEXITCODE }
+Set-Location (Join-Path $PSScriptRoot "..\build\$Preset")
+if ($Filter) { & .\ob_tests.exe "--test-case=$Filter" } else { & .\ob_tests.exe }
+exit $LASTEXITCODE
+```
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add .gitignore .gitattributes README.md
-git commit -m "chore: repository skeleton"
+git add .gitignore .gitattributes README.md scripts
+git commit -m "chore: repository skeleton and build scripts"
 ```
 
 ---
