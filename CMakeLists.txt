@@ -61,6 +61,7 @@ target_link_libraries(ob_core PUBLIC nlohmann_json::nlohmann_json)
 # ---- engine ----
 add_library(ob_engine STATIC
   src/engine/source_hub.cpp   # Tasks 11-15 append output_row, bridge_graph, command_router, control_server, engine
+  src/engine/omt_source.cpp
   src/engine/output_row.cpp
   src/engine/bridge_graph.cpp
   src/engine/control_server.cpp
@@ -69,6 +70,7 @@ add_library(ob_engine STATIC
 )
 target_include_directories(ob_engine PUBLIC src)
 target_link_libraries(ob_engine PUBLIC ob_core ixwebsocket::ixwebsocket)
+target_link_libraries(ob_engine PUBLIC omthx)
 # bcrypt is a Windows SDK library (bcrypt.lib, in the VS environment's default lib paths), not a
 # vcpkg port — exactly as BreadCamera's bc_engine links it. control_server uses it in Task 13.
 target_link_libraries(ob_engine PUBLIC bcrypt)
