@@ -949,6 +949,8 @@ git commit -m "feat(core): drop-oldest queue, lifted from BreadCamera"
 ```cpp
 #include <doctest/doctest.h>
 
+#include <string>
+
 #include "core/bridge_model.h"
 
 TEST_CASE("a new bridge has a default name and no sources or outputs") {
@@ -985,6 +987,30 @@ TEST_CASE("the advertised name joins the bridge and row names") {
   ob::Output o{.id = "o1", .sourceId = "", .target = ob::OutputTarget::Omt, .name = "Cam 1"};
   CHECK(b.advertisedName(o) == "Hanoi Bridge (Cam 1)");
 }
+
+TEST_CASE("advertisedName falls back to the row name when the bridge is unnamed") {
+  ob::Bridge b;
+  ob::Output o{.id = "o1", .sourceId = "", .target = ob::OutputTarget::Omt, .name = "Cam 1"};
+  CHECK(b.advertisedName(o) == "Cam 1");
+}
+
+// Pins every wire name. `toString` returning a string_view compared to a literal is the same
+// doctest decomposition trap Task 6 hit, hence the std::string(...) wrappers.
+TEST_CASE("the enums serialise to their wire names") {
+  CHECK(std::string(ob::toString(ob::SourceKind::Omt)) == "OMT");
+  CHECK(std::string(ob::toString(ob::SourceKind::OmtHx)) == "OMT-HX");
+  CHECK(std::string(ob::toString(ob::SourceKind::Ndi)) == "NDI");
+  CHECK(std::string(ob::toString(ob::OutputTarget::Omt)) == "OMT");
+  CHECK(std::string(ob::toString(ob::OutputTarget::OmtHx)) == "OMT-HX");
+  CHECK(std::string(ob::toString(ob::OutputTarget::Ndi)) == "NDI");
+  CHECK(std::string(ob::toString(ob::HxCodec::Hevc)) == "HEVC");
+  CHECK(std::string(ob::toString(ob::HxCodec::H264)) == "H.264");
+  CHECK(std::string(ob::toString(ob::Quality::Low)) == "Low");
+  CHECK(std::string(ob::toString(ob::Quality::Medium)) == "Medium");
+  CHECK(std::string(ob::toString(ob::Quality::High)) == "High");
+  CHECK(std::string(ob::toString(ob::AlphaMode::Auto)) == "Auto");
+  CHECK(std::string(ob::toString(ob::AlphaMode::Off)) == "Off");
+}
 ```
 
 - [ ] **Step 2: Write `src/core/bridge_model.h`**
@@ -995,6 +1021,7 @@ TEST_CASE("the advertised name joins the bridge and row names") {
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "core/signal_state.h"
@@ -1012,6 +1039,12 @@ std::string_view toString(OutputTarget t);
 std::string_view toString(HxCodec c);
 std::string_view toString(Quality q);
 std::string_view toString(AlphaMode a);
+// Wire names. kind/target/codec take their proper spelling ("OMT", "OMT-HX", "NDI", "HEVC",
+// "H.264"); quality and alpha follow design 5.2/5.3's field listing ("Low"/"Medium"/"High",
+// "Auto"/"Off"). These differ in case from `state` ("live"), which is lowercase only because it
+// is lifted verbatim from BreadCamera's shipped wire contract (Task 6) and must stay diffable.
+// Task 8's test pins every one of these so the JSON store (Task 9) and the command router
+// (Task 13) cannot drift from them.
 
 // What a source is sending, once known. Kept separate from core/frame.h's VideoFormat so
 // core/ stays free of the omthx headers; the adapters copy one into the other.
@@ -1082,6 +1115,7 @@ struct Bridge {
 #include "core/bridge_model.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace ob {
 
@@ -1114,19 +1148,20 @@ std::string_view toString(Quality q) {
 }
 std::string_view toString(AlphaMode a) { return a == AlphaMode::Auto ? "Auto" : "Off"; }
 
-Source* Bridge::findSource(const std::string& id) {
+const Source* Bridge::findSource(const std::string& id) const {
   const auto it = std::find_if(sources.begin(), sources.end(), [&](const Source& s) { return s.id == id; });
   return it == sources.end() ? nullptr : &*it;
 }
-const Source* Bridge::findSource(const std::string& id) const {
-  return const_cast<Bridge*>(this)->findSource(id);
+Source* Bridge::findSource(const std::string& id) {
+  // The const overload does the lookup; this one only removes constness from the result.
+  return const_cast<Source*>(std::as_const(*this).findSource(id));
 }
-Output* Bridge::findOutput(const std::string& id) {
+const Output* Bridge::findOutput(const std::string& id) const {
   const auto it = std::find_if(outputs.begin(), outputs.end(), [&](const Output& o) { return o.id == id; });
   return it == outputs.end() ? nullptr : &*it;
 }
-const Output* Bridge::findOutput(const std::string& id) const {
-  return const_cast<Bridge*>(this)->findOutput(id);
+Output* Bridge::findOutput(const std::string& id) {
+  return const_cast<Output*>(std::as_const(*this).findOutput(id));
 }
 
 size_t Bridge::outputsFor(const std::string& sourceId) const {
@@ -1142,15 +1177,15 @@ std::string Bridge::advertisedName(const Output& o) const {
 }  // namespace ob
 ```
 
-- [ ] **Step 4: Add to `CMakeLists.txt` and run**
+- [ ] **Step 4: Wire into `CMakeLists.txt` and run**
 
-Add `tests/bridge_model_test.cpp` to `ob_tests`.
+Two changes: add `src/core/bridge_model.cpp` to the **`ob_core`** source list, and `tests/bridge_model_test.cpp` to `ob_tests`. (Adding only the test would leave `Bridge::findSource` et al. undefined and fail the link.)
 
 Run:
 ```powershell
-cmake --build --preset release; .\build\release\ob_tests.exe
+cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: SUCCESS.
+Expected: `[doctest] Status: SUCCESS!` — the new cases pass alongside the existing eleven.
 
 - [ ] **Step 5: Commit**
 
