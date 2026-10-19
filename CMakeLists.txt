@@ -8,6 +8,7 @@ add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 
 find_package(doctest CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(ixwebsocket CONFIG REQUIRED)
 
 # FFmpeg comes from vcpkg; its ffmpeg package provides FindFFMPEG.cmake, so no module is vendored.
 find_package(FFMPEG REQUIRED)
@@ -56,6 +57,16 @@ target_include_directories(ob_core PUBLIC src)
 # does the same must pass that include path on to whoever links ob_core.
 target_link_libraries(ob_core PUBLIC nlohmann_json::nlohmann_json)
 
+# ---- engine ----
+add_library(ob_engine STATIC
+  src/engine/source_hub.cpp   # Tasks 11-15 append output_row, bridge_graph, command_router, control_server, engine
+)
+target_include_directories(ob_engine PUBLIC src)
+target_link_libraries(ob_engine PUBLIC ob_core ixwebsocket::ixwebsocket)
+# bcrypt is a Windows SDK library (bcrypt.lib, in the VS environment's default lib paths), not a
+# vcpkg port — exactly as BreadCamera's bc_engine links it. control_server uses it in Task 13.
+target_link_libraries(ob_engine PUBLIC bcrypt)
+
 # ---- tests ----
 add_executable(ob_tests
   tests/main.cpp
@@ -64,11 +75,13 @@ add_executable(ob_tests
   tests/bounded_queue_test.cpp
   tests/bridge_model_test.cpp
   tests/bridge_store_test.cpp
+  tests/source_hub_test.cpp
 )
 target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
 target_link_libraries(ob_tests PRIVATE omthx)
 target_link_libraries(ob_tests PRIVATE ob_core)
+target_link_libraries(ob_tests PRIVATE ob_engine)
 ob_copy_runtime(ob_tests)
 
 # ---- shells ----
