@@ -810,6 +810,9 @@ Expected: the file is header-only, is a template, drops the oldest item when ful
 ```cpp
 #include <doctest/doctest.h>
 
+#include <atomic>
+#include <thread>
+
 #include "core/bounded_queue.h"
 
 using namespace std::chrono_literals;
@@ -837,11 +840,51 @@ TEST_CASE("close unblocks a waiting pop and reopen resumes") {
   CHECK_FALSE(q.push(1));
   CHECK(q.pop(0ms) == 1);
 }
+
+// The case above proves the *state*, not the *wakeup*: it closes before it pops, so nothing
+// is ever parked. OutputRow::stop() (Task 11) relies on close() releasing a worker already
+// blocked inside pop(), so that interleaving needs its own case with a real thread.
+TEST_CASE("close releases a thread parked in pop") {
+  ob::BoundedQueue<int> q(2);
+  std::atomic<bool> returned = false;
+  std::optional<int> got;
+  std::thread t([&] {
+    got = q.pop(5000ms);
+    returned = true;
+  });
+  std::this_thread::sleep_for(50ms);
+  CHECK_FALSE(returned.load());  // still parked: nothing pushed and not yet closed
+  q.close();
+  t.join();  // returns promptly only because close() woke the parked pop
+  CHECK(returned.load());
+  CHECK_FALSE(got.has_value());
+  CHECK(q.closed());
+}
+
+TEST_CASE("push wakes a thread parked in pop") {
+  ob::BoundedQueue<int> q(2);
+  std::optional<int> got;
+  std::thread t([&] { got = q.pop(5000ms); });
+  std::this_thread::sleep_for(20ms);
+  CHECK_FALSE(q.push(7));
+  t.join();
+  CHECK(got == 7);
+}
 ```
 
-- [ ] **Step 3: Add `closed()` to the queue**
+- [ ] **Step 3: Guard the capacity, then add `closed()`, to the queue**
 
-`OutputRow`'s worker must tell a timeout apart from a close. Insert into `BoundedQueue`'s public section:
+Two edits to `src/core/bounded_queue.h`:
+
+**(a) Guard `capacity == 0`.** With `capacity_ == 0` the first `push` finds `q_.size() (0) >= capacity_ (0)` true and calls `q_.pop_front()` on an **empty** deque — undefined behaviour, not a harmless no-op. Add `assert`, and add `#include <cassert>` beside the header's other includes:
+
+```cpp
+  explicit BoundedQueue(size_t capacity) : capacity_(capacity) {
+    assert(capacity >= 1);
+  }
+```
+
+**(b) `closed()`.** `OutputRow`'s worker must tell a timeout apart from a close. Insert into `BoundedQueue`'s public section:
 
 ```cpp
   bool closed() const {
@@ -850,7 +893,7 @@ TEST_CASE("close unblocks a waiting pop and reopen resumes") {
   }
 ```
 
-`closed()` is the **only thing this file gains over BreadCamera's copy** (BreadCamera's `bounded_queue.h` has no such accessor); `OutputRow`'s worker needs it to tell a pop timeout apart from a close. Because it is added code, Step 2's test asserts it (hence the `closed()` checks above). It is `const` and locks the `mutable` mutex, so it is race-free against `close()`/`reopen()`.
+`closed()` is the **only thing this file gains over BreadCamera's copy** (BreadCamera's `bounded_queue.h` has no such accessor); `OutputRow`'s worker needs it to tell a pop timeout apart from a close. Because it is added code, Step 2's test asserts it (hence the `closed()` checks above). It is `const` and locks the `mutable` mutex, so it is race-free against `close()`/`reopen()`. Both (a) and (b) keep the rest of the file byte-identical to BreadCamera's.
 
 - [ ] **Step 4: Add to `CMakeLists.txt` and run**
 
@@ -1654,6 +1697,7 @@ TEST_CASE("stopping a row unblocks its worker") {
 #pragma once
 // One output (design 6.5). Reads its source's newest frame and hands it to a sink. Its own
 // drop-oldest queue means a slow or failed sink can never block another row or its SourceHub.
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -1683,7 +1727,7 @@ class OutputRow {
   const std::string& sourceId() const { return sourceId_; }
   void setSourceId(std::string id) { sourceId_ = std::move(id); }
 
-  uint64_t delivered() const { return delivered_; }
+  uint64_t delivered() const { return delivered_.load(); }  // atomic: incremented on the worker thread
   uint64_t dropped() const { return queue_.dropped(); }
 
  private:
@@ -1694,7 +1738,9 @@ class OutputRow {
   Deliver deliver_;
   BoundedQueue<std::shared_ptr<const Frame>> queue_;
   std::thread thread_;
-  uint64_t delivered_ = 0;
+  // Read by the test (and later the state snapshot) on a different thread from run(), which
+  // does the increment: it must be atomic, not a plain uint64_t.
+  std::atomic<uint64_t> delivered_ = 0;
 };
 
 }  // namespace ob
@@ -1745,7 +1791,7 @@ void OutputRow::run() {
 }  // namespace ob
 ```
 
-> `BoundedQueue::closed()` is added in Task 7, Step 5.
+> `BoundedQueue::closed()` is added in Task 7, Step 3.
 
 - [ ] **Step 4: Add to `CMakeLists.txt` and run**
 
