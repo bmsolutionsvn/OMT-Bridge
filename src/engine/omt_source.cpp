@@ -103,7 +103,6 @@ void OmtSource::videoLoop(OmtReceiverHolder& rx) {
     while (!stop_.load()) {
       omthx::VideoFrame vf;
       if (rx.receiver.receiveVideo(vf, kReceiveTimeoutMs)) {
-        last = std::chrono::steady_clock::now();
         auto f = std::make_shared<Frame>();
         f->format = VideoFormat{vf.format.width, vf.format.height, vf.format.fpsN,
                                 vf.format.fpsD, vf.format.alpha};
@@ -111,6 +110,7 @@ void OmtSource::videoLoop(OmtReceiverHolder& rx) {
         f->timestamp = vf.timestamp;
         f->uyvy = std::move(vf.uyvy);
         if (!f->valid()) continue;  // malformed peer: never publish a frame the hub rejects
+        last = std::chrono::steady_clock::now();  // liveness follows usable frames
         if (!live) {
           live = true;
           if (onState_) onState_(SignalState::Live, std::nullopt);
