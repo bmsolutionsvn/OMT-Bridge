@@ -2874,7 +2874,10 @@ TEST_CASE("rapid relaunches are throttled to the slow interval once the budget i
   ob::Supervisor sup(l);
   const auto t0 = Clock::now();
 
-  for (int i = 0; i < 5; ++i) sup.poll(t0 + std::chrono::seconds(i));  // 1 s apart, inside 60 s
+  for (int i = 0; i < 5; ++i) {
+    sup.poll(t0 + std::chrono::seconds(i));  // 1 s apart, inside 60 s
+    l.running = false;                       // launch() marks it running; it dies again at once
+  }
   CHECK(l.launched == 5);
   CHECK(sup.crashLooping(t0 + std::chrono::seconds(5)));
 
