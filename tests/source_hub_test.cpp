@@ -7,7 +7,7 @@
 
 #include "engine/source_hub.h"
 
-static std::shared_ptr<const ob::Frame> makeFrame(int w, int h) {
+static std::shared_ptr<ob::Frame> makeFrame(int w, int h) {
   auto f = std::make_shared<ob::Frame>();
   f->format = ob::VideoFormat{w, h, 60, 1, false};
   f->uyvy.assign(f->lumaBytes(), 0x10);
@@ -51,8 +51,8 @@ TEST_CASE("the latest frame is the newest published one") {
   // Assert on bools or through the pointee: doctest cannot stream a shared_ptr<const ob::Frame>
   // (it would need an operator<< for ob::Frame*, which does not exist — see the plan's rules).
   CHECK_FALSE(static_cast<bool>(hub.latest()));
-  hub.publish(makeFrame(4, 2));
-  hub.publish(makeFrame(8, 2));
+  hub.storeFrame(makeFrame(4, 2));
+  hub.storeFrame(makeFrame(8, 2));
   REQUIRE(hub.latest().get() != nullptr);
   CHECK(hub.latest()->format.width == 8);
 }

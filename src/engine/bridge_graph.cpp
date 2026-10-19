@@ -91,11 +91,11 @@ void BridgeGraph::stop() {
   for (OutputRow* r : rows) r->stop();
 }
 
-void BridgeGraph::publish(const std::string& sourceId, std::shared_ptr<const Frame> frame) {
+void BridgeGraph::publish(const std::string& sourceId, std::shared_ptr<Frame> frame) {
   std::lock_guard l(mu_);
   SourceHub* h = hubUnlocked(sourceId);
   if (h == nullptr) return;
-  h->publish(frame);
+  h->storeFrame(frame);
   for (auto& [id, r] : rows_) {
     if (r.row->sourceId() == sourceId) {
       r.row->offer(frame);

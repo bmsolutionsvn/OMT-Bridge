@@ -35,7 +35,7 @@ class BridgeGraph {
   void stop();
 
   // Hands a frame to every row whose output reads this source.
-  void publish(const std::string& sourceId, std::shared_ptr<const Frame> frame);
+  void publish(const std::string& sourceId, std::shared_ptr<Frame> frame);
 
   // Locks; for callers outside the graph.
   // READ-ONLY uses (latest(), running(), framesPublished()) are fine from any thread. Demand

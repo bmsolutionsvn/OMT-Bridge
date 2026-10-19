@@ -1,5 +1,6 @@
 #include "engine/source_hub.h"
 
+#include <chrono>
 #include <utility>
 
 namespace ob {
@@ -66,16 +67,33 @@ void SourceHub::setOnRunningChanged(RunningChanged cb) {
   onRunningChanged_ = std::move(cb);
 }
 
-void SourceHub::publish(std::shared_ptr<const Frame> frame) {
+void SourceHub::storeFrame(std::shared_ptr<Frame> frame) {
+  if (frame && frame->format.alpha) {
+    // One scan per source frame, shared by every output (design 6.4).
+    const size_t offset = frame->alphaOffset();
+    const size_t bytes = frame->alphaBytes();
+    const uint8_t* plane = offset == Frame::kNoAlpha ? nullptr : frame->uyvy.data() + offset;
+    if (alpha_.shouldDrop(true, plane, bytes, std::chrono::steady_clock::now())) {
+      // Drop the plane without copying: shrinking a vector does not move the picture, and
+      // Frame::valid() requires uyvy.size() == lumaBytes() + alphaBytes() for the new format.
+      frame->format.alpha = false;
+      frame->premultiplied = false;  // nothing to premultiply once alpha is gone
+      frame->uyvy.resize(frame->lumaBytes());
+    }
+  } else {
+    alpha_.reset();
+  }
+
+  // The slot is immutable once stored: consumers only ever see shared_ptr<const Frame>.
+  std::shared_ptr<const Frame> published = std::move(frame);
   std::shared_ptr<const Frame> previous;
   {
     std::lock_guard l(mu_);
     previous = std::move(latest_);
-    latest_ = std::move(frame);
+    latest_ = std::move(published);
     ++published_;
   }
-  // `previous` is released here, outside the lock: if this hub held the last reference, dropping
-  // it frees a full frame, and that must not happen while the mutex is held.
+  // `previous` is released here, outside the lock: dropping the last reference frees a full frame.
 }
 
 std::shared_ptr<const Frame> SourceHub::latest() const {

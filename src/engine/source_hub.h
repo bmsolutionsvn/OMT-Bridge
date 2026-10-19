@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 
+#include "core/alpha_gate.h"
 #include "core/frame.h"
 
 namespace ob {
@@ -35,8 +36,12 @@ class SourceHub {
   // so a callback installed after the hub is already running waits for the next transition.
   void setOnRunningChanged(RunningChanged cb);
 
-  // Overwrites the slot; never queues. A frame shared by N outputs is decoded once (design 6.5).
-  void publish(std::shared_ptr<const Frame> frame);
+  // Stores the newest frame in the single slot and applies opaque-alpha detection. Non-const in,
+  // const stored: the hub may clear `format.alpha` before the frame becomes visible to consumers.
+  // This does NOT fan out — carrying media to rows is BridgeGraph::publish(sourceId, frame). An
+  // adapter must call the graph, never this, or outputs receive nothing while framesPublished()
+  // climbs.
+  void storeFrame(std::shared_ptr<Frame> frame);
   std::shared_ptr<const Frame> latest() const;
 
   uint64_t framesPublished() const;
@@ -54,6 +59,7 @@ class SourceHub {
 
   std::shared_ptr<const Frame> latest_;
   uint64_t published_ = 0;
+  AlphaGate alpha_;
 };
 
 }  // namespace ob
