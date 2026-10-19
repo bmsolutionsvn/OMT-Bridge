@@ -12,7 +12,7 @@
 
 > **Prerequisite for every task (amended 2026-10-19):** run every build and test through `scripts/test.ps1` (or `scripts/build.ps1`). Those scripts activate the MSVC developer shell and set `VCPKG_ROOT` themselves, because this machine has **no developer shell on PATH** by default — `cmake`, `ninja` and `VCPKG_ROOT` are only present inside one. The `cmake --preset release` lines shown inside each task are exactly what those scripts run; **run the script, not the raw lines**. All paths are relative to the `OMT-Bridge` repository root unless they start with a sibling repo name (for example `..\BreadCamera`).
 >
-> **Every file you create or edit must end with a single trailing newline** (`.gitattributes` sets `* text=auto eol=lf`). Reviewers flag its absence and it has recurred across tasks: write the newline, and check with `git show <sha> | Select-String "No newline"` returning nothing.
+> **Every file you create or edit must end with a single trailing newline** (`.gitattributes` sets `* text=auto eol=lf`). Reviewers flag its absence and it has recurred across tasks. For a **newly added** file, check with `git show <sha> | Select-String "No newline"` returning nothing. (On a commit that *adds* a missing newline, the marker appears on the removed side of the diff and is expected — verify such a file's last byte instead.)
 
 ---
 
