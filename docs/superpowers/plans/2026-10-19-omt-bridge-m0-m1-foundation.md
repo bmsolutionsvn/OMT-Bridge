@@ -725,16 +725,22 @@ Run:
 
 - [ ] **Step 3: Write the failing test `tests/signal_state_test.cpp`**
 
+Note two things, both verified against the lifted source and BreadCamera's control protocol:
+- The wire literal is **lowercase** (`"ready"`, `"connecting"`, `"live"`, `"offline"`) — BreadCamera's real contract (`src/engine/camera.cpp` sets `p + "/state" = "ready"`; its e2e tests assert `...["state"] == "live"`). The design spec's `Ready | Connecting | Live | Offline` is prose enumerating the enum members, exactly as it writes `kind` as `OMT | OMT-HX | NDI` and `quality` as `Low | Medium | High`. Do **not** capitalise the strings.
+- Wrap `toString(...)` in `std::string(...)`. Comparing a `std::string_view` to a string literal makes doctest's expression decomposition produce `string_view + const char*`, which does not compile (BreadCamera's `aja_test.cpp` / `decklink_test.cpp` carry a `DOCTEST_CONFIG_DOUBLE_STRINGIFY` workaround for it). Converting to `std::string` sidesteps it.
+
 ```cpp
 #include <doctest/doctest.h>
 
+#include <string>
+
 #include "core/signal_state.h"
 
-TEST_CASE("the four signal states have their fixed names") {
-  CHECK(ob::toString(ob::SignalState::Ready) == "Ready");
-  CHECK(ob::toString(ob::SignalState::Connecting) == "Connecting");
-  CHECK(ob::toString(ob::SignalState::Live) == "Live");
-  CHECK(ob::toString(ob::SignalState::Offline) == "Offline");
+TEST_CASE("the four signal states serialise to their lowercase wire names") {
+  CHECK(std::string(ob::toString(ob::SignalState::Ready)) == "ready");
+  CHECK(std::string(ob::toString(ob::SignalState::Connecting)) == "connecting");
+  CHECK(std::string(ob::toString(ob::SignalState::Live)) == "live");
+  CHECK(std::string(ob::toString(ob::SignalState::Offline)) == "offline");
 }
 
 TEST_CASE("an absent error serialises to JSON null and a present one to an object") {
@@ -745,15 +751,29 @@ TEST_CASE("an absent error serialises to JSON null and a present one to an objec
 }
 ```
 
-- [ ] **Step 4: Add the test to `CMakeLists.txt` and run it to verify it passes**
+- [ ] **Step 4: Create the `ob_core` library and wire the test into CMake**
 
-Add `tests/signal_state_test.cpp` to the `ob_tests` sources.
+Task 2 left `ob_core` uncreated (its comment said "created in Task 6" — this is that moment; `frame.h` was header-only, so nothing linked). Add the library just above the `# ---- tests ----` marker, *replacing that stale comment*:
+
+```cmake
+# ---- core ----
+# The shared, UI-free core library. Every later task adds its .cpp to this list.
+add_library(ob_core STATIC
+  src/core/signal_state.cpp
+)
+target_include_directories(ob_core PUBLIC src)
+# PUBLIC: signal_state.h includes <nlohmann/json.hpp>, and every later core header that
+# does the same must pass that include path on to whoever links ob_core.
+target_link_libraries(ob_core PUBLIC nlohmann_json::nlohmann_json)
+```
+
+Then, in the `ob_tests` block: add `tests/signal_state_test.cpp` to its sources and add `target_link_libraries(ob_tests PRIVATE ob_core)` (keep the existing `doctest::doctest`, `omthx` and `ob_copy_runtime` lines). `ob_tests` keeps `PRIVATE tests src` — harmless, and `ob_core` also supplies `src` publicly.
 
 Run:
 ```powershell
-cmake --build --preset release; .\build\release\ob_tests.exe
+cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: SUCCESS. (The sources already existed in Task 2's list; they now exist for real.)
+Expected: `[doctest] Status: SUCCESS!` — the two new cases pass alongside the existing ones.
 
 - [ ] **Step 5: Commit**
 
