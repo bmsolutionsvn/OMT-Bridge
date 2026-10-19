@@ -234,10 +234,12 @@ The M1 review found two functions named `publish`: `SourceHub::publish` (fills t
 Replace the `publish` declaration with:
 
 ```cpp
-  // Stores the newest frame in the single slot and applies opaque-alpha detection. This does NOT
-  // fan out — carrying media to rows is BridgeGraph::publish(sourceId, frame). An adapter must
-  // call the graph, never this, or outputs receive nothing while framesPublished() climbs.
-  void storeFrame(std::shared_ptr<const Frame> frame);
+  // Stores the newest frame in the single slot and applies opaque-alpha detection. Non-const in,
+  // const stored: the hub may clear `format.alpha` before the frame becomes visible to consumers.
+  // This does NOT fan out — carrying media to rows is BridgeGraph::publish(sourceId, frame). An
+  // adapter must call the graph, never this, or outputs receive nothing while framesPublished()
+  // climbs.
+  void storeFrame(std::shared_ptr<Frame> frame);
 ```
 
 Add the gate as a member:
@@ -251,7 +253,7 @@ and `#include "core/alpha_gate.h"`.
 - [ ] **Step 2: Implement `storeFrame`**
 
 ```cpp
-void SourceHub::storeFrame(std::shared_ptr<const Frame> frame) {
+void SourceHub::storeFrame(std::shared_ptr<Frame> frame) {
   if (frame && frame->format.alpha) {
     // One scan per source frame, shared by every output (design 6.4).
     const size_t offset = frame->alphaOffset();
@@ -266,26 +268,22 @@ void SourceHub::storeFrame(std::shared_ptr<const Frame> frame) {
     alpha_.reset();
   }
 
+  // The slot is immutable once stored: consumers only ever see shared_ptr<const Frame>.
+  std::shared_ptr<const Frame> published = std::move(frame);
   std::shared_ptr<const Frame> previous;
   {
     std::lock_guard l(mu_);
     previous = std::move(latest_);
-    latest_ = std::move(frame);
+    latest_ = std::move(published);
     ++published_;
   }
   // `previous` is released here, outside the lock: dropping the last reference frees a full frame.
 }
 ```
 
-`storeFrame` takes a non-const `shared_ptr<Frame>`? No — it receives `shared_ptr<const Frame>` and must modify `format.alpha`. That is a const object. **Change the parameter to `std::shared_ptr<Frame>` and store `shared_ptr<const Frame>`**: the published frame must be immutable to consumers, but the hub may adjust it before publishing.
-
-Use:
-
-```cpp
-  void storeFrame(std::shared_ptr<Frame> frame);
-```
-
-and inside, after adjusting, `std::shared_ptr<const Frame> published = std::move(frame);` then store `published`.
+The parameter is **non-const** precisely so the gate can clear `format.alpha`; the slot holds
+`shared_ptr<const Frame>`, so no consumer can mutate a published frame. Nothing else may write
+`latest_`.
 
 - [ ] **Step 3: Update the test and run**
 
@@ -429,13 +427,14 @@ class LambdaSink : public ob::Sink {
 
 and `ob::OutputRow row("o1", std::make_unique<LambdaSink>([&](auto& f) { ... }));`.
 
-`tests/bridge_graph_test.cpp` and `tests/engine_test.cpp` also construct a graph with a deliver lambda — they will not compile until Task 4. Do Task 3 and Task 4 as one commit if preferred; the plan keeps them separate for review, so run only `ob_tests` after Task 3 **is not possible**. Therefore: **Task 3 and Task 4 land together**. Steps for both are below; commit once at the end of Task 4.
+`tests/bridge_graph_test.cpp` and `tests/engine_test.cpp` also construct a graph with a deliver
+lambda, so they will not compile until Task 4 changes the factory. **Task 3 and Task 4 are one
+change**: do both, then run the suite and make a single commit at the end of Task 4. Do not commit
+or claim Task 3 green on its own — the tree does not build between them.
 
-Run: `.\scripts\test.ps1`
-Expected: `[doctest] Status: SUCCESS!` with **63 cases** after Task 4 is also applied.
-
-Run: `.\scripts\test.ps1`
-Expected: `[doctest] Status: SUCCESS!` with **63 cases** after Task 4 is also applied.
+Run after Task 4: `.\scripts\test.ps1`
+Expected: `[doctest] Status: SUCCESS!` with at least **63 cases** (57 + 4 alpha + the new
+row/graph cases). Recount from the runner output; every case must pass.
 
 ---
 
@@ -652,13 +651,17 @@ void BridgeGraph::stop() {
 ```cpp
 void BridgeGraph::publish(const std::string& sourceId, std::shared_ptr<Frame> frame) {
   std::lock_guard l(mu_);
-  if (SourceHub* h = hubUnlocked(sourceId)) h->storeFrame(std::move(frame));
+  // Pass a copy, not std::move: our own reference is still needed for the row fan-out below.
+  // storeFrame adjusts `format.alpha` on the shared Frame object, so rows see the same decision.
+  if (SourceHub* h = hubUnlocked(sourceId)) h->storeFrame(frame);
   for (auto& [id, r] : rows_)
     if (r.row->sourceId() == sourceId) { r.row->offer(frame); ++r.offered; }
 }
 ```
 
-Careful: `storeFrame` consumes the `shared_ptr`; take a copy before moving, or iterate rows first and pass the same pointer. Use a local copy for the rows after calling `storeFrame` — `storeFrame` takes by value, so pass `frame` (copy) and keep ours.
+Do **not** `std::move(frame)` into `storeFrame`: it would leave `frame` empty and every row would
+be offered a null pointer. Row fan-out happens under `mu_`, after the hub store, on the same Frame
+object — so a row never sees a frame whose alpha decision differs from the hub's.
 
 - [ ] **Step 4: Update `tests/engine_test.cpp`**
 
@@ -687,8 +690,8 @@ git commit -m "feat(engine): rows own their sink; the graph starts adapters only
 ```cpp
 #pragma once
 // One OMT or OMT-HX input (design 8). Runs only while its SourceHub is demanded: start() opens an
-// omthx::Receiver, stop() closes it. Video and audio each get a thread, which omthx::Receiver
-// allows (receiveVideo and receiveAudio may run concurrently).
+// omthx::Receiver, stop() closes it. ONE receiver serves both loops — the library states that
+// receiveVideo and receiveAudio may run on two threads, one call type per thread.
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -702,6 +705,8 @@ git commit -m "feat(engine): rows own their sink; the graph starts adapters only
 
 namespace ob {
 
+struct OmtReceiverHolder;  // hides omthx from this header
+
 class OmtSource {
  public:
   using FrameSink = std::function<void(std::shared_ptr<Frame>)>;
@@ -712,19 +717,20 @@ class OmtSource {
   OmtSource(const OmtSource&) = delete;
   OmtSource& operator=(const OmtSource&) = delete;
 
-  void start();  // idempotent; Connecting
-  void stop();   // idempotent; joins both threads; Ready
+  void start();  // idempotent; opens the receiver; Connecting (Offline if it cannot open)
+  void stop();   // idempotent; joins both threads, closes the receiver; Ready
   bool running() const;
 
  private:
-  void videoLoop();
-  void audioLoop();
+  void videoLoop(OmtReceiverHolder& rx);
+  void audioLoop(OmtReceiverHolder& rx);
 
   std::string address_;
   FrameSink onFrame_;
   StateSink onState_;
   std::atomic<bool> stop_{false};
   mutable std::mutex mu_;
+  std::unique_ptr<OmtReceiverHolder> rx_;  // guarded by mu_; alive only while running
   std::thread video_, audio_;
 };
 
@@ -742,6 +748,13 @@ class OmtSource {
 #include <omthx/omthx.h>
 
 namespace ob {
+
+struct OmtReceiverHolder {
+  explicit OmtReceiverHolder(const std::string& address)
+      : receiver(address, omthx::PixelFormat::Uyvy) {}
+  omthx::Receiver receiver;
+};
+
 namespace {
 constexpr int kReceiveTimeoutMs = 100;
 constexpr auto kOfflineAfter = std::chrono::seconds(2);
@@ -761,34 +774,48 @@ void OmtSource::start() {
   std::lock_guard l(mu_);
   if (video_.joinable()) return;
   stop_.store(false);
+  try {
+    rx_ = std::make_unique<OmtReceiverHolder>(address_);
+  } catch (const std::exception& e) {
+    // Never let an open failure escape into the graph's demand path.
+    rx_.reset();
+    if (onState_) onState_(SignalState::Offline, ErrorInfo{"omt-open", e.what()});
+    return;
+  }
   if (onState_) onState_(SignalState::Connecting, std::nullopt);
-  video_ = std::thread([this] { videoLoop(); });
-  audio_ = std::thread([this] { audioLoop(); });
+  video_ = std::thread([this] { videoLoop(*rx_); });
+  audio_ = std::thread([this] { audioLoop(*rx_); });
 }
 
 void OmtSource::stop() {
   std::thread v, a;
   {
     std::lock_guard l(mu_);
-    if (!video_.joinable() && !audio_.joinable()) return;
+    if (!video_.joinable() && !audio_.joinable()) {
+      rx_.reset();
+      return;
+    }
     stop_.store(true);
     v = std::move(video_);
     a = std::move(audio_);
   }
   if (v.joinable()) v.join();
   if (a.joinable()) a.join();
+  {
+    std::lock_guard l(mu_);
+    rx_.reset();  // closed only after both loops are gone
+  }
   if (onState_) onState_(SignalState::Ready, std::nullopt);
 }
 
-void OmtSource::videoLoop() {
+void OmtSource::videoLoop(OmtReceiverHolder& rx) {
   try {
     // Uyvy is the canonical frame: the UYVY plane followed by the alpha plane, exactly UYVA.
-    omthx::Receiver rx(address_, omthx::PixelFormat::Uyvy);
     bool live = false;
     auto last = std::chrono::steady_clock::now();
     while (!stop_.load()) {
       omthx::VideoFrame vf;
-      if (rx.receiveVideo(vf, kReceiveTimeoutMs)) {
+      if (rx.receiver.receiveVideo(vf, kReceiveTimeoutMs)) {
         last = std::chrono::steady_clock::now();
         auto f = std::make_shared<Frame>();
         f->format = VideoFormat{vf.format.width, vf.format.height, vf.format.fpsN,
@@ -811,24 +838,32 @@ void OmtSource::videoLoop() {
   }
 }
 
-void OmtSource::audioLoop() {
+void OmtSource::audioLoop(OmtReceiverHolder& rx) {
   try {
-    omthx::Receiver rx(address_, omthx::PixelFormat::Uyvy);  // audio-only receiver
     while (!stop_.load()) {
       omthx::AudioFrame af;
-      if (rx.receiveAudio(af, kReceiveTimeoutMs)) {
-        // Audio is not in M2's row plumbing yet; drain so the receiver does not stall.
+      if (rx.receiver.receiveAudio(af, kReceiveTimeoutMs)) {
+        // Audio passthrough is M3 (design 20 does not list it in M2's done-criteria). Draining
+        // keeps the session's audio path moving instead of queuing behind an unread stream.
       }
     }
   } catch (const std::exception&) {
-    // Audio failure must not take video down; the row's video path is independent.
+    // Audio failure must not take video down; the video path is independent.
   }
 }
 
 }  // namespace ob
 ```
 
-> Audio is **drained, not delivered**, in Task 5; Task 7 adds the delivery path. Two `omthx::Receiver` objects on the same address is supported (each is an independent session) and keeps the two threads on different objects, which the header requires.
+The receiver is opened **before** either thread starts and closed **after** both join, so the two
+loops share one session and one network subscription. Do not create a second `Receiver` for audio:
+the header explicitly permits both calls on one object, one call type per thread.
+
+> **Audio is drained, not delivered.** Design §10 requires passthrough, but §20 does not list
+> audio in M2's done-criteria, so delivery is **deferred to M3** with the NDI adapters
+> (`Sender::sendAudio` takes planar float, sample rate and channel count; the same plumbing
+> serves both). Draining here keeps the session healthy — it is not a delivery path, and M2 must
+> never be reported complete while claiming audio works.
 
 - [ ] **Step 3: Build**
 
@@ -1261,6 +1296,10 @@ git commit -m "test(m2): loopback proof and measured per-output cost"
 
 **Spec coverage.** §6.3 canonical UYVY frame — already M1. §6.4 hub/adapter demand — Tasks 2 and 4. §6.5 row isolation with a real sink — Tasks 3 and 6. §7.2 each output owns its Sender — Task 6. §8 `OmtSource`/`OmtSink` — Tasks 5 and 6. §9.2 opaque alpha — Tasks 1 and 2. §9.3 H.264 alpha — Task 6. §10 audio — Task 5 drains it; **delivery is deferred and must be named as such** (see below). §12.1 states — Tasks 5 and 7. §15.2 loopback — Task 8. §20 M2 done-criteria — Tasks 6 and 8 plus the §16 measurement.
 
-**Known gaps, stated rather than hidden.** Audio is drained in Task 5 and not delivered to sinks; §10 requires passthrough. Add a Task 9 for it before claiming M2 complete, or explicitly move audio to M3. The plan above chose to defer and says so here; the executing engineer must not report M2 as done with audio silently dropped.
+**Known gaps, stated rather than hidden.** Audio is drained in Task 5 and not delivered to sinks;
+§10 requires passthrough. **Deferred to M3**, on the grounds that §20's M2 done-criteria do not
+include audio and that the same audio plumbing (`Sender::sendAudio`, planar float + rate +
+channels) then serves OMT and NDI together. M2 must not be reported complete while claiming audio
+works.
 
 **Type consistency.** `Sink::deliver` takes `shared_ptr<const Frame>`; `BridgeGraph::publish` takes `shared_ptr<Frame>` (the hub may clear alpha before publishing); `SourceHub::storeFrame` takes `shared_ptr<Frame>` and stores `shared_ptr<const Frame>`. `SourceHub::storeFrame` is the only writer of the slot; `BridgeGraph::publish` is the only fan-out.
