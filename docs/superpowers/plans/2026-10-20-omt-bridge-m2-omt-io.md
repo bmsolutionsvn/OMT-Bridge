@@ -422,7 +422,9 @@ void OutputRow::configure(const Output& output, const std::string& advertisedNam
 }
 ```
 
-`run()` calls `sink_->deliver(*f)` inside the existing try/catch.
+`run()` calls `if (sink_) sink_->deliver(*f);` inside the existing try/catch. A null sink is legal:
+`Engine` passes `SinkFactory{}` until Task 7, and a row with no sink must still count offers and
+must not fault.
 
 - [ ] **Step 4: Update the other tests and run**
 
@@ -464,6 +466,7 @@ Three M1 deferrals close here, and they are prerequisites for any adapter:
 
 **Files:**
 - Modify: `src/engine/bridge_graph.h`, `src/engine/bridge_graph.cpp`, `tests/bridge_graph_test.cpp`, `tests/engine_test.cpp`
+- Modify: `src/engine/engine.h` — one line: the in-class `BridgeGraph graph_{[](const std::shared_ptr<const Frame>&) {}};` no longer matches the new constructor. Use `BridgeGraph graph_{SinkFactory{}};`. Task 7 replaces it with the real factory.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -530,6 +533,46 @@ TEST_CASE("an unchanged re-apply still fires no transition") {
 }
 ```
 
+- [ ] **Step 1b: Update the existing graph tests for started-gated demand**
+
+Task 4 deliberately stops demand before `start()`, so every existing case that asserts `refs()` or
+`running()` after a bare `apply()` must now start the graph. Change **all seven** existing
+constructions from the deliver lambda to `ob::BridgeGraph graph(nullSink);`, and add
+`graph.start();` as noted:
+
+| existing case | change |
+|---|---|
+| "one source feeding two outputs…" | `graph.start();` after `apply(b)` |
+| "removing an output releases its ref…" | `graph.start();` after the first `apply(b)`; the second apply stays on the started graph |
+| "an output with no source is kept as an idle row" | constructor only |
+| "fan-out offers each published frame…" | constructor only (already calls `start()`) |
+| "publishing to a source that has no rows…" | constructor only |
+| "re-applying an unchanged model fires no running transitions" | `graph.start();` after `apply(b)`, before installing the counter |
+| "an output that moves to another source moves its ref" | `graph.start();` after `apply(b)` |
+
+Do not weaken any assertion: `refs()` and `running()` keep their expected values because the graph
+is now started.
+
+Also rewrite the first `tests/engine_test.cpp` case, because demand is no longer applied at
+`apply()`:
+
+```cpp
+TEST_CASE("applying a bridge starts rows and refs the hub") {
+  ob::Engine engine(0, "token");
+  engine.apply(twoOutputsOneSource());
+  REQUIRE(engine.graph().hub("s1") != nullptr);
+  // Demand is gated on start(): configuring must not open an adapter.
+  CHECK(engine.graph().hub("s1")->refs() == 0);
+  CHECK_FALSE(engine.graph().hub("s1")->running());
+  engine.start();
+  CHECK(engine.graph().hub("s1")->refs() == 2);
+  CHECK(engine.graph().rowCount() == 2u);
+  engine.stop();
+}
+```
+
+The second engine test already calls `apply()` then `start()`, so it needs no change.
+
 - [ ] **Step 2: Change the header**
 
 ```cpp
@@ -538,8 +581,9 @@ TEST_CASE("an unchanged re-apply still fires no transition") {
 
   explicit BridgeGraph(SinkFactory sinks, HubReady onHubCreated = {});
   ...
-  // const: callers outside the graph may read; demand is the graph's business.
-  const SourceHub* hub(const std::string& sourceId) const;
+  // Non-const: tests install the hub-owned running hook through this accessor. Demand is still
+  // the graph's business — never addRef()/release() through it.
+  SourceHub* hub(const std::string& sourceId) const;
   ...
  private:
   // Moves every hub to `wanted`, by delta, with mu_ released. Called by apply/start.
@@ -679,17 +723,21 @@ Do **not** `std::move(frame)` into `storeFrame`: it would leave `frame` empty an
 be offered a null pointer. Row fan-out happens under `mu_`, after the hub store, on the same Frame
 object — so a row never sees a frame whose alpha decision differs from the hub's.
 
-- [ ] **Step 4: Update `tests/engine_test.cpp`**
+- [ ] **Step 4: Engine's null sinks**
 
-`Engine`'s graph is constructed with a sink factory; `Engine` itself is unchanged in signature for the tests. `twoOutputsOneSource()` rows now have null sinks, which `OutputRow` tolerates (`sink_ == nullptr` → deliver does nothing). Re-run.
+`Engine`'s graph is constructed with `SinkFactory{}` for now, so every row's sink is null.
+`OutputRow` must tolerate that: `run()` calls `sink_->deliver(*f)` only when `sink_ != nullptr`,
+and delivers nothing otherwise. `twoOutputsOneSource()` rows therefore have null sinks, and the
+fan-out case still counts offers (`offeredToRow`), not deliveries.
 
 - [ ] **Step 5: Run and commit**
 
 Run: `.\scripts\test.ps1`
-Expected: `[doctest] Status: SUCCESS!` with **63 cases** (57 + 4 alpha + ... : recount at run time; every case must pass).
+Expected: `[doctest] Status: SUCCESS!` with at least **63 cases** (57 + 4 alpha + the new
+row/graph cases). Recount from the runner output; every case must pass.
 
 ```bash
-git add src/engine/output_row.h src/engine/output_row.cpp src/engine/bridge_graph.h src/engine/bridge_graph.cpp tests/output_row_test.cpp tests/bridge_graph_test.cpp tests/engine_test.cpp
+git add src/engine/output_row.h src/engine/output_row.cpp src/engine/bridge_graph.h src/engine/bridge_graph.cpp src/engine/engine.h tests/output_row_test.cpp tests/bridge_graph_test.cpp tests/engine_test.cpp
 git commit -m "feat(engine): rows own their sink; the graph starts adapters only when started"
 ```
 
