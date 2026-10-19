@@ -263,9 +263,11 @@ void SourceHub::storeFrame(std::shared_ptr<Frame> frame) {
     const size_t bytes = frame->alphaBytes();
     const uint8_t* plane = offset == Frame::kNoAlpha ? nullptr : frame->uyvy.data() + offset;
     if (alpha_.shouldDrop(true, plane, bytes, std::chrono::steady_clock::now())) {
-      // Drop alpha without copying: sinks honour format.alpha, and the plane is simply ignored.
+      // Drop the plane without copying: shrinking a vector does not move the picture, and
+      // Frame::valid() requires uyvy.size() == lumaBytes() + alphaBytes() for the new format.
       frame->format.alpha = false;
       frame->premultiplied = false;  // nothing to premultiply once alpha is gone
+      frame->uyvy.resize(frame->lumaBytes());
     }
   } else {
     alpha_.reset();
