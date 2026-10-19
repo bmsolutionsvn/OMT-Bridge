@@ -3105,10 +3105,10 @@ std::string Engine::handleCommand(const ClientId& client, const std::string& tex
 ```cpp
 // OMT-Bridge-Engine.exe: headless. Owns the sources, outputs and bridge graph; keeps them
 // running when the UI is closed (design 6.1).
+#include <windows.h>
+
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <iostream>
 #include <string>
 
 #include "core/bridge_store.h"
@@ -3116,18 +3116,11 @@ std::string Engine::handleCommand(const ClientId& client, const std::string& tex
 
 namespace {
 
-std::string randomTokenHex() {
-  // Loopback + a random token is the security boundary (design 6.1, BreadCamera's ControlServer).
-  unsigned char buf[32];
-  for (size_t i = 0; i < sizeof(buf); ++i) buf[i] = static_cast<unsigned char>(std::rand() & 0xFF);
-  static const char* hex = "0123456789abcdef";
-  std::string out;
-  out.reserve(sizeof(buf) * 2);
-  for (unsigned char b : buf) {
-    out.push_back(hex[b >> 4]);
-    out.push_back(hex[b & 0xF]);
-  }
-  return out;
+HANDLE g_stopEvent = nullptr;
+
+BOOL WINAPI onConsoleControl(DWORD) {
+  if (g_stopEvent) SetEvent(g_stopEvent);
+  return TRUE;  // handled, so the default handler does not kill us mid-frame
 }
 
 }  // namespace
@@ -3145,7 +3138,9 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "usage: omt-bridge-engine --port <n> [--token <s>] [--bridge <file>]\n");
     return 2;
   }
-  if (token.empty()) token = randomTokenHex();
+  // The token is the only guard on the loopback control channel, so it must come from a CSPRNG.
+  // Reuse the lifted randomToken() (BCryptGenRandom); std::rand() is unseeded and predictable.
+  if (token.empty()) token = ob::randomToken();
 
   ob::Engine engine(port, token, bridgeFile);
 
@@ -3160,13 +3155,22 @@ int main(int argc, char** argv) {
 
   engine.start();
 
-  // Report readiness on stdout, then run until told to stop. The UI reads the first line.
+  // Report readiness on stdout; the UI reads this first line.
   std::printf("READY %s\n", token.c_str());
   std::fflush(stdout);
 
-  std::string line;
-  while (std::getline(std::cin, line)) {
-    if (line == "quit") break;
+  // Run until the process is asked to stop. Deliberately NOT tied to stdin: the UI launches the
+  // engine without a console and may close at any moment, and design 6.1 says closing the window
+  // leaves the engine bridging. Ctrl+C (or a console close) ends it cleanly.
+  g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (g_stopEvent != nullptr) {
+    SetConsoleCtrlHandler(onConsoleControl, TRUE);
+    WaitForSingleObject(g_stopEvent, INFINITE);
+    SetConsoleCtrlHandler(onConsoleControl, FALSE);
+    CloseHandle(g_stopEvent);
+    g_stopEvent = nullptr;
+  } else {
+    Sleep(INFINITE);  // could not arm the handler: keep bridging until terminated
   }
 
   engine.stop();
@@ -3174,15 +3178,22 @@ int main(int argc, char** argv) {
 }
 ```
 
-- [ ] **Step 5: Add `ob_engine`'s engine sources, build and run**
+- [ ] **Step 5: Wire the engine target, build and run**
 
-Add `tests/engine_test.cpp`, `src/engine/engine.cpp` to the build (`engine_main.cpp` already builds `omt-bridge-engine`).
+Three changes:
+- add `src/engine/engine.cpp` to **`ob_engine`**;
+- add `tests/engine_test.cpp` to `ob_tests` (which already links `ob_engine`);
+- make the executable link the engine library — it currently links nothing, so `ob::Engine` would be undefined:
+```cmake
+target_link_libraries(omt-bridge-engine PRIVATE ob_engine)
+```
+(`ob_engine` is `PUBLIC ob_core ixwebsocket::ixwebsocket`, so the exe gets the graph, the router, the control server and its transport; `ob_copy_runtime(omt-bridge-engine)` already copies the OMT DLLs.)
 
 Run:
 ```powershell
 cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: SUCCESS, including `outputs survive a control-channel disconnect`.
+Expected: `[doctest] Status: SUCCESS!` — the two new cases pass alongside the existing fifty-four.
 
 - [ ] **Step 6: Prove the two processes talk**
 
@@ -3194,6 +3205,9 @@ Expected: `READY deadbeef`.
 
 In another shell run a WebSocket client against `ws://127.0.0.1:5990/?token=deadbeef` and send `{"cmd":"state"}`.
 Expected: a JSON reply containing `"ok":true`. Sending with a wrong token gets no reply / a rejected connection.
+
+Then stop the engine with **Ctrl+C** in its shell, and check it exits 0. (It deliberately does not
+stop when stdin or the UI disappears — design 6.1 — so there is no "type quit" path.)
 
 - [ ] **Step 7: Commit**
 
