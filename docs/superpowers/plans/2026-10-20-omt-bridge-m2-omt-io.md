@@ -576,7 +576,7 @@ The second engine test already calls `apply()` then `start()`, so it needs no ch
 - [ ] **Step 2: Change the header**
 
 ```cpp
-  using SinkFactory = OutputRow::SinkFactory;
+  // SinkFactory is namespace-scope in output_row.h; both are in namespace ob.
   using HubReady = std::function<void(SourceHub& hub, const Source& source)>;
 
   explicit BridgeGraph(SinkFactory sinks, HubReady onHubCreated = {});
