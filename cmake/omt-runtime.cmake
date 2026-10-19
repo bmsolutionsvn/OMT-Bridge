@@ -6,6 +6,5 @@ if(EXISTS "${OMTHX_ROOT}/include/omthx/omthx.h" AND EXISTS "${OMTHX_ROOT}/omt/li
   add_subdirectory("${OMTHX_ROOT}" omthx-build EXCLUDE_FROM_ALL)
   set(OB_WITH_OMT ON)
 else()
-  set(OB_WITH_OMT OFF)
   message(FATAL_ERROR "OMT-HX is missing at ${OMTHX_ROOT}. Run: git submodule update --init --recursive")
 endif()
