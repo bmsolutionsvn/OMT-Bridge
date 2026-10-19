@@ -1889,6 +1889,7 @@ git commit -m "feat(engine): reference-counted SourceHub"
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -1945,6 +1946,43 @@ TEST_CASE("stopping a row unblocks its worker") {
   row.stop();  // must not hang
   CHECK(true);
 }
+
+TEST_CASE("a sink that throws stops the row instead of terminating the process") {
+  ob::OutputRow row("o1", "s1", [](const std::shared_ptr<const ob::Frame>&) {
+    throw std::runtime_error("sink broke");
+  });
+  row.start();
+  row.offer(frame(0));
+
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (!row.faulted() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  row.stop();  // must not hang on a worker that already returned
+
+  CHECK(row.faulted());
+  CHECK(row.delivered() == 0u);  // the frame was consumed by the throw, not delivered
+}
+
+TEST_CASE("a row can be started again after a stop") {
+  ob::OutputRow row("o1", "s1", [](const std::shared_ptr<const ob::Frame>&) {});
+  row.start();
+  row.offer(frame(0));
+  auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (row.delivered() < 1 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  row.stop();
+  CHECK(row.delivered() == 1u);
+
+  // Restart: start() must reopen the closed queue, or the worker exits at once and delivers
+  // nothing (this is the "Stop all outputs, then Start" cycle the UI offers).
+  row.start();
+  row.offer(frame(1));
+  deadline = std::chrono::steady_clock::now() + 2s;
+  while (row.delivered() < 2 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  row.stop();
+  CHECK(row.delivered() == 2u);
+}
 ```
 
 - [ ] **Step 2: Write `src/engine/output_row.h`**
@@ -1985,6 +2023,9 @@ class OutputRow {
 
   uint64_t delivered() const { return delivered_.load(); }  // atomic: incremented on the worker thread
   uint64_t dropped() const { return queue_.dropped(); }
+  // True once the sink threw. The worker then stops delivering (it does not spin retrying); the
+  // engine reads this to mark this output Offline, so one failed sink affects only its own row.
+  bool faulted() const { return faulted_.load(); }
 
  private:
   void run();
@@ -1997,6 +2038,7 @@ class OutputRow {
   // Read by the test (and later the state snapshot) on a different thread from run(), which
   // does the increment: it must be atomic, not a plain uint64_t.
   std::atomic<uint64_t> delivered_ = 0;
+  std::atomic<bool> faulted_ = false;
 };
 
 }  // namespace ob
@@ -2007,7 +2049,8 @@ class OutputRow {
 ```cpp
 #include "engine/output_row.h"
 
-#include <atomic>
+#include <chrono>
+#include <exception>
 
 namespace ob {
 namespace {
@@ -2022,6 +2065,10 @@ OutputRow::~OutputRow() { stop(); }
 
 void OutputRow::start() {
   if (thread_.joinable()) return;
+  // A row can be started again after stop() ("Stop all outputs", then resume): stop() closed the
+  // queue, so reopen it before the worker starts — otherwise its first pop returns nullopt, sees
+  // `closed()`, and the worker exits immediately, delivering nothing.
+  queue_.reopen();
   thread_ = std::thread([this] { run(); });
 }
 
@@ -2039,7 +2086,16 @@ void OutputRow::run() {
       if (queue_.closed()) return;  // closed by stop(); a timeout just keeps waiting
       continue;
     }
-    deliver_(*f);
+    // A sink that throws must not take the process down — an exception escaping a thread body
+    // calls std::terminate — and must not spin retrying either. Mark the row faulted and stop
+    // delivering; the engine turns that into Offline for this output alone, so a failed sink
+    // never affects another row or its SourceHub (the header's promise).
+    try {
+      deliver_(*f);
+    } catch (...) {
+      faulted_.store(true);
+      return;
+    }
     ++delivered_;
   }
 }
@@ -2049,15 +2105,15 @@ void OutputRow::run() {
 
 > `BoundedQueue::closed()` is added in Task 7, Step 3.
 
-- [ ] **Step 4: Add to `CMakeLists.txt` and run**
+- [ ] **Step 4: Wire into `CMakeLists.txt` and run**
 
-Add `tests/output_row_test.cpp` and `src/engine/output_row.cpp`.
+Two changes: add `src/engine/output_row.cpp` to the **`ob_engine`** source list, and `tests/output_row_test.cpp` to `ob_tests` (`ob_tests` already links `ob_engine`, so no extra link line).
 
 Run:
 ```powershell
-cmake --build --preset release; .\build\release\ob_tests.exe
+cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: SUCCESS, including the drop test.
+Expected: `[doctest] Status: SUCCESS!` — the five new cases pass alongside the existing twenty-eight.
 
 - [ ] **Step 5: Commit**
 
