@@ -228,6 +228,9 @@ The M1 review found two functions named `publish`: `SourceHub::publish` (fills t
 
 **Files:**
 - Modify: `src/engine/source_hub.h`, `src/engine/source_hub.cpp`, `tests/source_hub_test.cpp`
+- Modify: `src/engine/bridge_graph.h`, `src/engine/bridge_graph.cpp` — **signature only**:
+  `publish` must take `shared_ptr<Frame>`, because it hands the frame to the now non-const
+  `storeFrame`. Without this the tree does not compile.
 
 - [ ] **Step 1: Rename in the header and document the trap**
 
@@ -285,17 +288,28 @@ The parameter is **non-const** precisely so the gate can clear `format.alpha`; t
 `shared_ptr<const Frame>`, so no consumer can mutate a published frame. Nothing else may write
 `latest_`.
 
+- [ ] **Step 2b: Widen `BridgeGraph::publish` to a mutable frame**
+
+`BridgeGraph::publish` takes `std::shared_ptr<const Frame>` today and forwards it to the hub, so it
+will not bind to the new `storeFrame`. Change the declaration in `src/engine/bridge_graph.h` and
+the definition in `src/engine/bridge_graph.cpp` to `std::shared_ptr<Frame>`. Leave the body alone
+in this task — Task 4 revisits fan-out and the hub store. Only tests call `publish`, and
+`tests/bridge_graph_test.cpp` already passes a `shared_ptr<Frame>`.
+
 - [ ] **Step 3: Update the test and run**
 
-In `tests/source_hub_test.cpp` replace the three `hub.publish(...)` calls with `hub.storeFrame(...)`.
+In `tests/source_hub_test.cpp`:
+- `makeFrame` must return `std::shared_ptr<ob::Frame>`. It currently returns
+  `std::shared_ptr<const ob::Frame>`, which no longer binds to `storeFrame`.
+- Replace **both** `hub.publish(...)` calls with `hub.storeFrame(...)`.
 
 Run: `.\scripts\test.ps1`
-Expected: `[doctest] Status: SUCCESS!`, 61 cases.
+Expected: `[doctest] Status: SUCCESS!`, 61 cases (same count as Task 1).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/engine/source_hub.h src/engine/source_hub.cpp tests/source_hub_test.cpp
+git add src/engine/source_hub.h src/engine/source_hub.cpp src/engine/bridge_graph.h src/engine/bridge_graph.cpp tests/source_hub_test.cpp
 git commit -m "refactor(engine): SourceHub::storeFrame, with shared opaque-alpha detection"
 ```
 
