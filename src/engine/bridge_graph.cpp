@@ -10,7 +10,8 @@ BridgeGraph::BridgeGraph(SinkFactory sinks, HubReady onHubCreated)
 BridgeGraph::~BridgeGraph() { stop(); }
 
 void BridgeGraph::apply(const Bridge& bridge) {
-  std::vector<std::pair<SourceHub*, Source>> created;
+  std::vector<std::unique_ptr<SourceHub>> pruned;
+  std::vector<std::pair<SourceHub*, Source>> toHook;
   std::vector<OutputRow*> toStart;
   std::vector<std::unique_ptr<OutputRow>> retired;
   std::map<std::string, int> wanted;
@@ -18,14 +19,16 @@ void BridgeGraph::apply(const Bridge& bridge) {
     std::lock_guard l(mu_);
 
     for (const Source& s : bridge.sources) {
-      if (hubs_.find(s.id) == hubs_.end()) {
-        auto hub = std::make_unique<SourceHub>(s.id);
-        created.emplace_back(hub.get(), s);
-        hubs_.emplace(s.id, std::move(hub));
-      }
+      if (hubs_.find(s.id) == hubs_.end()) hubs_.emplace(s.id, std::make_unique<SourceHub>(s.id));
     }
     for (auto it = hubs_.begin(); it != hubs_.end();) {
-      if (bridge.findSource(it->first) == nullptr) it = hubs_.erase(it); else ++it;
+      if (bridge.findSource(it->first) == nullptr) {
+        pruned.push_back(std::move(it->second));
+        hooked_.erase(it->first);
+        it = hubs_.erase(it);
+      } else {
+        ++it;
+      }
     }
 
     for (auto it = rows_.begin(); it != rows_.end();) {
@@ -46,20 +49,32 @@ void BridgeGraph::apply(const Bridge& bridge) {
         r.row = std::make_unique<OutputRow>(o.id, std::move(sink));
         found = rows_.emplace(o.id, std::move(r)).first;
         found->second.row->configure(o, advertised);
-        if (started_) toStart.push_back(found->second.row.get());
       } else {
         found->second.row->configure(o, advertised);
       }
     }
 
+    for (const Source& s : bridge.sources)
+      if (hooked_.find(s.id) == hooked_.end())
+        if (SourceHub* h = hubUnlocked(s.id)) toHook.emplace_back(h, s);
+
     for (auto& [id, hub] : hubs_) wanted[id] = 0;
     for (const Output& o : bridge.outputs)
       if (hubUnlocked(o.sourceId) != nullptr) ++wanted[o.sourceId];
+
+    if (started_)
+      for (auto& [id, r] : rows_) toStart.push_back(r.row.get());
   }
 
+  for (auto& h : pruned)
+    while (h->refs() > 0) h->release();  // stop the removed source's adapter before it dies
+  pruned.clear();
   retired.clear();                                    // join retired rows with mu_ released
-  for (auto& [hub, source] : created)
-    if (onHubCreated_) onHubCreated_(*hub, source);   // install the adapter BEFORE demand
+  for (auto& [hub, source] : toHook) {
+    if (onHubCreated_) onHubCreated_(*hub, source);
+    std::lock_guard l(mu_);
+    hooked_.insert(source.id);  // only after success, so a throwing hook is retried
+  }
   for (OutputRow* r : toStart) r->start();            // spawn workers outside mu_
   applyDemand(wanted);
   std::lock_guard l(mu_);
@@ -108,7 +123,7 @@ void BridgeGraph::stop() {
   }
   for (OutputRow* r : rows) r->stop();
   for (SourceHub* h : hubs)
-    while (h->refs() > 0) h->release();  // closes every adapter, including a demanded one
+    while (h->refs() > 0) h->release();  // closes every ref-driven adapter
 }
 
 void BridgeGraph::publish(const std::string& sourceId, std::shared_ptr<Frame> frame) {

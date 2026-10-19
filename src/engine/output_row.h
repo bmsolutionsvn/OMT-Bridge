@@ -14,13 +14,24 @@
 
 namespace ob {
 
+// A sink owns one output's delivery. The graph constructs it through SinkFactory and configures
+// it; the row's worker calls deliver().
+//
+// configure() and deliver() may run on different threads (a re-apply while the row is running);
+// a sink must synchronise its own state — the graph mutex does not protect it.
+//
+// A sink must never call back into BridgeGraph or SourceHub: construction and configure() run
+// while the graph mutex is held, so a callback would invert the lock order.
+//
+// Construction and configure() run under the graph mutex: keep them cheap and do not block.
 class Sink {
  public:
   virtual ~Sink() = default;
   virtual void deliver(const std::shared_ptr<const Frame>& frame) = 0;
-  virtual void configure(const Output& output, const std::string& advertisedName) {}
+  virtual void configure(const Output&, const std::string&) {}
   virtual std::string note() const { return {}; }
 };
+// May return nullptr; a row with no sink is legal.
 using SinkFactory = std::function<std::unique_ptr<Sink>(const Output&, const std::string&)>;
 
 class OutputRow {

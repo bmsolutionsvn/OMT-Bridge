@@ -127,19 +127,28 @@ TEST_CASE("an output that moves to another source moves its ref") {
   CHECK(graph.hub("s2")->running());
 }
 
-TEST_CASE("a hub-created hook runs before the hub is given any demand") {
+TEST_CASE("a new hub is hooked before demand, even while the graph is started") {
   ob::Bridge b;
   b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
   b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
 
-  int installedAtRefs = -1;
+  std::vector<int> seen;
   ob::BridgeGraph graph(nullSink, [&](ob::SourceHub& hub, const ob::Source&) {
-    hub.setOnRunningChanged([&](bool) {});
-    installedAtRefs = hub.refs();
+    seen.push_back(hub.refs());
   });
   graph.apply(b);
+  graph.start();
 
-  CHECK(installedAtRefs == 0);
+  b.sources.push_back(ob::Source{.id = "s2", .kind = ob::SourceKind::Omt, .address = "PC2"});
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s2", .target = ob::OutputTarget::Omt, .name = "B"});
+  graph.apply(b);
+
+  REQUIRE(seen.size() == 2u);
+  CHECK(seen[0] == 0);
+  CHECK(seen[1] == 0);                        // s2 hooked before it received demand
+  CHECK(graph.hub("s2")->refs() == 1);
+  CHECK(graph.hub("s2")->running());
+  graph.stop();
 }
 
 TEST_CASE("no adapter is demanded before start, and stop releases it") {
@@ -167,17 +176,79 @@ TEST_CASE("no adapter is demanded before start, and stop releases it") {
   CHECK(transitions[1] == false);
 }
 
-TEST_CASE("an unchanged re-apply still fires no transition") {
+TEST_CASE("demand configured while stopped is applied by start") {
   ob::Bridge b;
   b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
   b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
 
-  std::atomic<int> transitions{0};
+  ob::BridgeGraph graph(nullSink);
+  graph.apply(b);                       // stopped
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "B"});
+  graph.apply(b);                       // still stopped
+  CHECK(graph.hub("s1")->refs() == 0);
+
+  graph.start();
+  CHECK(graph.hub("s1")->refs() == 2);
+  CHECK(graph.hub("s1")->running());
+  graph.stop();
+}
+
+TEST_CASE("removing the last output while stopped leaves nothing running after start") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+
   ob::BridgeGraph graph(nullSink);
   graph.apply(b);
   graph.start();
-  graph.hub("s1")->setOnRunningChanged([&](bool) { transitions.fetch_add(1); });
+  graph.stop();
 
+  b.outputs.clear();
+  graph.apply(b);                       // stopped; stale demand must not survive
+  graph.start();
+  CHECK(graph.rowCount() == 0u);
+  REQUIRE(graph.hub("s1") != nullptr);
+  CHECK(graph.hub("s1")->refs() == 0);
+  CHECK_FALSE(graph.hub("s1")->running());
+  graph.stop();
+}
+
+TEST_CASE("start and stop are idempotent") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+
+  ob::BridgeGraph graph(nullSink);
   graph.apply(b);
-  CHECK(transitions.load() == 0);
+  graph.start();
+  graph.start();
+  CHECK(graph.hub("s1")->refs() == 1);
+  graph.stop();
+  graph.stop();
+  CHECK(graph.hub("s1")->refs() == 0);
+  CHECK_FALSE(graph.hub("s1")->running());
+}
+
+TEST_CASE("removing a running source stops its adapter before the hub dies") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+
+  std::vector<bool> transitions;
+  ob::BridgeGraph graph(nullSink, [&](ob::SourceHub& hub, const ob::Source&) {
+    hub.setOnRunningChanged([&](bool on) { transitions.push_back(on); });
+  });
+  graph.apply(b);
+  graph.start();
+  REQUIRE(transitions.size() == 1u);
+
+  b.sources.clear();
+  b.outputs.clear();
+  graph.apply(b);                       // must fire the stop before destroying the hub
+
+  REQUIRE(transitions.size() == 2u);
+  CHECK(transitions[0] == true);
+  CHECK(transitions[1] == false);
+  CHECK(graph.hub("s1") == nullptr);
+  CHECK(graph.rowCount() == 0u);
 }

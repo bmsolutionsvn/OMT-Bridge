@@ -186,3 +186,19 @@ TEST_CASE("a row reports its sink's note") {
   ob::OutputRow row("o1", std::move(sink));
   CHECK(row.note() == "note");
 }
+
+TEST_CASE("a row with no sink is legal and never faults") {
+  ob::OutputRow row("o1", nullptr);
+  ob::Output o;
+  o.id = "o1";
+  row.configure(o, "A");
+  CHECK(row.note().empty());
+  row.start();
+  row.offer(frame(1));
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (row.delivered() < 1 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  row.stop();
+  CHECK(row.delivered() == 1u);
+  CHECK_FALSE(row.faulted());
+}

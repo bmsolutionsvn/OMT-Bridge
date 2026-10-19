@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 
 #include "core/bridge_model.h"
@@ -22,11 +23,18 @@ namespace ob {
 class BridgeGraph {
  public:
   // SinkFactory is namespace-scope in output_row.h; both are in namespace ob.
+  // Called synchronously on the caller's thread during apply(), before that hub receives demand.
+  // When apply() comes from a command, the caller holds Engine::controlMu_: the hook must not take
+  // controlMu_ and must not block — it may start an adapter thread but must not wait on one.
+  // Never call back into BridgeGraph.
   using HubReady = std::function<void(SourceHub& hub, const Source& source)>;
 
   explicit BridgeGraph(SinkFactory sinks, HubReady onHubCreated = {});
   BridgeGraph(const BridgeGraph&) = delete;
   BridgeGraph& operator=(const BridgeGraph&) = delete;
+  // Calls stop(), which fires hub transitions. The owner must stop the graph before destroying
+  // anything the hook captures; in Engine, adapter state must be declared before graph_ so it
+  // outlives the callbacks.
   ~BridgeGraph();
 
   // Creates, updates and removes hubs and rows so they match `bridge`. Idempotent.
@@ -44,8 +52,7 @@ class BridgeGraph {
   // calls apply() — so two transitions cannot interleave and the running callback's delivery
   // order always matches the last state change. Toggle thumbnail demand by changing the model and
   // calling apply(), not by reaching a hub from another thread.
-  // Non-const: tests install the hub-owned running hook through this accessor. Demand is still
-  // the graph's business — never addRef()/release() through it.
+  // Returns a mutable hub for tests; demand mutation stays with the graph.
   SourceHub* hub(const std::string& sourceId) const;
   size_t hubCount() const;
   size_t rowCount() const;
@@ -64,11 +71,13 @@ class BridgeGraph {
   };
 
   mutable std::mutex mu_;
+  // The factory runs under mu_ (as does Sink::configure).
   SinkFactory sinks_;
   HubReady onHubCreated_;
   std::map<std::string, std::unique_ptr<SourceHub>> hubs_;
   std::map<std::string, Row> rows_;  // by output id
   std::map<std::string, int> demand_;  // per source id, the demand the model implies
+  std::set<std::string> hooked_;  // source ids whose onHubCreated_ hook succeeded
   bool started_ = false;
 };
 
