@@ -1383,6 +1383,7 @@ std::optional<Bridge> loadBridge(const std::filesystem::path& path);
 #include "core/bridge_store.h"
 
 #include <fstream>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -1497,15 +1498,15 @@ std::optional<Bridge> loadBridge(const std::filesystem::path& path) {
 }  // namespace ob
 ```
 
-- [ ] **Step 4: Add to `CMakeLists.txt` and run**
+- [ ] **Step 4: Wire into `CMakeLists.txt` and run**
 
-Add `tests/bridge_store_test.cpp` to `ob_tests`.
+Two changes: add `src/core/bridge_store.cpp` to the **`ob_core`** source list, and `tests/bridge_store_test.cpp` to `ob_tests`. (Test-only wiring would leave `saveBridge`/`loadBridge` undefined and fail the link.)
 
 Run:
 ```powershell
-cmake --build --preset release; .\build\release\ob_tests.exe
+cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: SUCCESS.
+Expected: `[doctest] Status: SUCCESS!` — the four new cases pass alongside the existing nineteen.
 
 - [ ] **Step 5: Commit**
 
