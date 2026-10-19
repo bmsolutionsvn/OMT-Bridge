@@ -2836,7 +2836,9 @@ TEST_CASE("the supervisor launches a dead engine and relaunches it while it stay
   sup.poll(t0);
   CHECK(l.launched == 1);
 
-  sup.poll(t0 + std::chrono::seconds(1));  // still dead: a dead engine is relaunched at once
+  // launch() sets running = true, so clear it: the engine has since exited and must read as dead.
+  l.running = false;
+  sup.poll(t0 + std::chrono::seconds(1));  // a dead engine is relaunched at once
   CHECK(l.launched == 2);
 }
 
