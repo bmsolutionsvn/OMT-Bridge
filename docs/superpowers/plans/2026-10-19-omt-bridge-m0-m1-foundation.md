@@ -13,6 +13,13 @@
 > **Prerequisite for every task (amended 2026-10-19):** run every build and test through `scripts/test.ps1` (or `scripts/build.ps1`). Those scripts activate the MSVC developer shell and set `VCPKG_ROOT` themselves, because this machine has **no developer shell on PATH** by default — `cmake`, `ninja` and `VCPKG_ROOT` are only present inside one. The `cmake --preset release` lines shown inside each task are exactly what those scripts run; **run the script, not the raw lines**. All paths are relative to the `OMT-Bridge` repository root unless they start with a sibling repo name (for example `..\BreadCamera`).
 >
 > **Every file you create or edit must end with a single trailing newline** (`.gitattributes` sets `* text=auto eol=lf`). Reviewers flag its absence and it has recurred across tasks. For a **newly added** file, check with `git show <sha> | Select-String "No newline"` returning nothing. (On a commit that *adds* a missing newline, the marker appears on the removed side of the diff and is expected — verify such a file's last byte instead.)
+>
+> **doctest stringifies every `CHECK` operand, and that has bitten three times.** Before writing an assertion, ask what doctest will try to stream:
+> - **An enum with an `ob::toString` overload.** `CHECK(*back == k)` on two `ob::SourceKind` values makes ADL pick `ob::toString(SourceKind)`, which returns `std::string_view`; `string_view + const char*` then fails to compile. Compare `static_cast<int>(...)`, or wrap in `std::string(...)` when comparing to a literal.
+> - **`std::shared_ptr<T>`.** doctest streams it through the standard `operator<<`, whose body does `os << p.get()` — so it needs an `operator<<` for `T*`/`T`, which a plain struct like `ob::Frame` does not have. Write `CHECK_FALSE(static_cast<bool>(ptr))`, `REQUIRE(ptr.get() != nullptr)`, and compare through the pointee (`ptr->field`) rather than the pointer itself.
+> - **A `std::string_view` compared to a string literal** — wrap the left side in `std::string(...)`.
+>
+> When in doubt, assert on a `bool`, an `int`, or a `std::string`, never on a struct, an enum, or a smart pointer.
 
 ---
 
@@ -1624,10 +1631,12 @@ TEST_CASE("running changes are reported once per transition") {
 
 TEST_CASE("the latest frame is the newest published one") {
   ob::SourceHub hub("s1");
-  CHECK(hub.latest() == nullptr);
+  // Assert on bools or through the pointee: doctest cannot stream a shared_ptr<const ob::Frame>
+  // (it would need an operator<< for ob::Frame*, which does not exist — see the plan's rules).
+  CHECK_FALSE(static_cast<bool>(hub.latest()));
   hub.publish(makeFrame(4, 2));
   hub.publish(makeFrame(8, 2));
-  REQUIRE(hub.latest() != nullptr);
+  REQUIRE(hub.latest().get() != nullptr);
   CHECK(hub.latest()->format.width == 8);
 }
 ```
