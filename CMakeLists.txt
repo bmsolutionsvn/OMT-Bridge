@@ -43,3 +43,14 @@ target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
 target_link_libraries(ob_tests PRIVATE omthx)
 ob_copy_runtime(ob_tests)
+
+# ---- shells ----
+add_executable(omt-bridge-engine src/engine/engine_main.cpp)
+ob_copy_runtime(omt-bridge-engine)
+
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
+set(CMAKE_AUTOMOC ON)
+add_executable(omt-bridge WIN32 src/ui/main.cpp src/ui/main_window.cpp src/ui/main_window.h)
+# The UI includes "ui/main_window.h" (project-root relative), so src must be on the include path.
+target_include_directories(omt-bridge PRIVATE src)
+target_link_libraries(omt-bridge PRIVATE Qt6::Widgets)

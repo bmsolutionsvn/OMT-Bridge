@@ -1,0 +1,55 @@
+# Configure, build and test OMT Bridge on every push and pull request.
+# NDI is not installed on the runner, so OB_WITH_NDI resolves to OFF (spec 14.4).
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\..\vcpkg-cache
+    steps:
+      - name: Check out OMT-Bridge and its submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
+      - name: Point at the runner's vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          git -C $env:VCPKG_INSTALLATION_ROOT fetch -q
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-
+
+      - name: Configure
+        run: cmake --preset release -DOB_WITH_NDI=OFF
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - name: Test
+        working-directory: build/release
+        run: .\ob_tests.exe
