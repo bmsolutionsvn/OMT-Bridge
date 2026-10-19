@@ -2,15 +2,20 @@
 
 #include <filesystem>
 #include <fstream>
+#include <random>
+#include <string>
 
 #include "core/bridge_store.h"
 
 namespace fs = std::filesystem;
 
 static fs::path tempFile(const char* name) {
-  const fs::path p = fs::temp_directory_path() / "ob-bridge-tests" / name;
-  fs::create_directories(p.parent_path());
-  return p;
+  // Unique per process: two concurrent test binaries (another checkout, ctest -j) must not
+  // collide, and the absent-file case must not see a previous run's stale residue.
+  static const std::string unique = std::to_string(std::random_device{}());
+  const fs::path dir = fs::temp_directory_path() / ("ob-bridge-tests-" + unique);
+  fs::create_directories(dir);
+  return dir / name;
 }
 
 TEST_CASE("a bridge round-trips through JSON unchanged") {
@@ -49,4 +54,12 @@ TEST_CASE("an unknown enum string in the file is rejected, not silently defaulte
   const fs::path p = tempFile("bad-enum.ombridge.json");
   std::ofstream(p) << R"({"name":"x","sources":[{"id":"s1","kind":"Whatever"}],"outputs":[]})";
   CHECK_FALSE(ob::loadBridge(p).has_value());
+}
+
+TEST_CASE("a file with no settings block loads with the struct defaults") {
+  const fs::path p = tempFile("no-settings.ombridge.json");
+  std::ofstream(p) << R"({"name":"x","sources":[],"outputs":[]})";
+  const auto loaded = ob::loadBridge(p);
+  REQUIRE(loaded.has_value());
+  CHECK(loaded->settings == ob::BridgeSettings{});
 }
