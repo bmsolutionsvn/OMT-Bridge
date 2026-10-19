@@ -2630,7 +2630,10 @@ class CommandRouter {
 
  private:
   Bridge bridge_;
-  uint64_t nextId_ = 1;
+  // Sources and outputs number independently (s1, s2, … and o1, o2, …): the prefixes exist
+  // precisely to tell the two kinds apart, so a shared counter would mint "o2" for a first output.
+  uint64_t nextSourceId_ = 1;
+  uint64_t nextOutputId_ = 1;
 };
 
 }  // namespace ob
@@ -2661,21 +2664,21 @@ std::string refuse(const std::string& message) {
 
 void CommandRouter::setBridge(Bridge b) {
   bridge_ = std::move(b);
-  nextId_ = 1;
-  // Seed past every id already in the loaded model: add-source/add-output mint ids from nextId_,
-  // and a duplicate would make findSource/remove-source act on the wrong row (and make a state
-  // reply list two rows under one id).
-  const auto bump = [this](const std::string& id, char prefix) {
+  nextSourceId_ = 1;
+  nextOutputId_ = 1;
+  // Seed each counter past its own ids in the loaded model: a duplicate id would make
+  // findSource/remove-source act on the wrong row, and make a state reply list two rows under one.
+  const auto seed = [](const std::string& id, char prefix, uint64_t& next) {
     if (id.size() < 2 || id[0] != prefix) return;
     try {
-      const int n = std::stoi(id.substr(1));
-      if (n >= nextId_) nextId_ = n + 1;
+      const uint64_t n = std::stoull(id.substr(1));
+      if (n >= next) next = n + 1;
     } catch (const std::exception&) {
       // Not a generated id (e.g. hand-edited); leave the counter alone.
     }
   };
-  for (const Source& s : bridge_.sources) bump(s.id, 's');
-  for (const Output& o : bridge_.outputs) bump(o.id, 'o');
+  for (const Source& s : bridge_.sources) seed(s.id, 's', nextSourceId_);
+  for (const Output& o : bridge_.outputs) seed(o.id, 'o', nextOutputId_);
 }
 
 std::string CommandRouter::handle(const ClientId&, const std::string& text) {
@@ -2716,7 +2719,7 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
       if (!kind) return refuse("add-source: unknown \"kind\": " + j["kind"].get<std::string>());
 
       Source s;
-      s.id = "s" + std::to_string(nextId_++);
+      s.id = "s" + std::to_string(nextSourceId_++);
       s.kind = *kind;
       s.address = j["address"];
       bridge_.sources.push_back(std::move(s));
@@ -2742,7 +2745,7 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
       if (j.contains("name") && !j["name"].is_string())
         return refuse("add-output: \"name\" must be text");
       Output o;
-      o.id = "o" + std::to_string(nextId_++);
+      o.id = "o" + std::to_string(nextOutputId_++);
       o.sourceId = j.value("sourceId", std::string{});
       o.name = j.value("name", std::string{"Output " + o.id});
       bridge_.outputs.push_back(std::move(o));
