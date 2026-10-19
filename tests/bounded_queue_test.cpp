@@ -44,11 +44,19 @@ TEST_CASE("close releases a thread parked in pop") {
   });
   std::this_thread::sleep_for(50ms);
   CHECK_FALSE(returned.load());  // still parked: nothing pushed and not yet closed
+
+  const auto start = std::chrono::steady_clock::now();
   q.close();
-  t.join();  // returns promptly only because close() woke the parked pop
+  t.join();
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
   CHECK(returned.load());
   CHECK_FALSE(got.has_value());
   CHECK(q.closed());
+  // pop's timeout is 5000 ms, so this passes only if close() *woke* the parked pop rather
+  // than letting the timeout expire. Without it, a close() that forgot to notify would
+  // still pass — 5 s slower. This is the assertion that makes the test about the wakeup.
+  CHECK(elapsed < 1000ms);
 }
 
 TEST_CASE("push wakes a thread parked in pop") {
