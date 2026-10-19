@@ -2,6 +2,11 @@
 // Reconciles a Bridge model into running hubs and rows (design 6.4, 6.5). apply() may be
 // called with a whole new model; it diffs against what it holds. No master tick: publish()
 // is called by each SourceHub's adapter, and fan-out comes from the ref counts.
+//
+// THREADING: apply(), start() and stop() are owned by ONE thread (the engine's control loop);
+// only publish() may be called from other threads (the source adapters). That is what lets the
+// first three hold raw row/hub pointers across a deliberate unlock, while publish() locks for its
+// read. Never call apply() from an adapter.
 #include <functional>
 #include <map>
 #include <memory>

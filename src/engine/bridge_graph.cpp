@@ -57,12 +57,16 @@ void BridgeGraph::apply(const Bridge& bridge) {
   }
   retired.clear();  // joins each retired row's worker with mu_ released
 
-  // Phase 2, with mu_ released: bring each hub to exactly the demand the model implies.
+  // Phase 2, with mu_ released: move each hub to exactly the demand the model implies, by DELTA.
+  // Resetting to zero and re-adding would fire a stop-then-start transition on every apply(), so an
+  // unrelated edit (renaming an output) would bounce every running source adapter. Only the
+  // difference moves, so an unchanged model produces no transition at all.
   for (auto& [id, want] : wanted) {
     SourceHub* h = hub(id);  // the public accessor locks mu_ only for the lookup
     if (h == nullptr) continue;
-    while (h->refs() > 0) h->release();
-    for (int i = 0; i < want; ++i) h->addRef();
+    int cur = h->refs();
+    for (; cur > want; --cur) h->release();
+    for (; cur < want; ++cur) h->addRef();
   }
 }
 

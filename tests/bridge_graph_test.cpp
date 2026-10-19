@@ -1,5 +1,8 @@
 #include <doctest/doctest.h>
 
+#include <atomic>
+#include <memory>
+
 #include "engine/bridge_graph.h"
 
 TEST_CASE("one source feeding two outputs counts two refs on one hub (N x M)") {
@@ -73,4 +76,44 @@ TEST_CASE("publishing to a source that has no rows is a no-op") {
   auto f = std::make_shared<ob::Frame>();
   graph.publish("gone", f);  // must not throw
   CHECK(true);
+}
+
+// Re-applying an unchanged model must not churn demand: a reset-to-zero-and-re-add would fire a
+// stop-then-start on every source adapter for any unrelated edit (Task 13 calls apply() per edit).
+TEST_CASE("re-applying an unchanged model fires no running transitions") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "B"});
+
+  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  graph.apply(b);
+
+  std::atomic<int> transitions{0};
+  graph.hub("s1")->setOnRunningChanged([&](bool) { transitions.fetch_add(1); });
+
+  graph.apply(b);  // the identical model
+
+  CHECK(transitions.load() == 0);
+  CHECK(graph.hub("s1")->refs() == 2);
+}
+
+// The subtle refcount case: one row leaves one source and joins another.
+TEST_CASE("an output that moves to another source moves its ref") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.sources.push_back(ob::Source{.id = "s2", .kind = ob::SourceKind::Omt, .address = "PC2"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+
+  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  graph.apply(b);
+  REQUIRE(graph.hub("s1")->refs() == 1);
+
+  b.outputs[0].sourceId = "s2";
+  graph.apply(b);
+
+  CHECK(graph.hub("s1")->refs() == 0);
+  CHECK_FALSE(graph.hub("s1")->running());
+  CHECK(graph.hub("s2")->refs() == 1);
+  CHECK(graph.hub("s2")->running());
 }
