@@ -630,13 +630,16 @@ permissions:
 jobs:
   windows-x64:
     runs-on: windows-2025
+    timeout-minutes: 120  # a cold vcpkg cache builds ffmpeg and qtbase from source
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\..\vcpkg-cache
     steps:
+      # recursive: OMT-HX has its own submodules (omt/libomt, omt/libvmx, omt/libomtnet);
+      # plain `true` is `git submodule update --init` without --recursive and leaves them empty.
       - name: Check out OMT-Bridge and its submodules
         uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -657,8 +660,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-
+          key: vcpkg-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ runner.os }}-x64-windows-
 
       - name: Configure
         run: cmake --preset release -DOB_WITH_NDI=OFF
