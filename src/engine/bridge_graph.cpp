@@ -171,4 +171,18 @@ uint64_t BridgeGraph::offeredToRow(const std::string& outputId) const {
   return it == rows_.end() ? 0u : it->second.offered;
 }
 
+std::optional<BridgeGraph::RowStats> BridgeGraph::rowStats(const std::string& outputId) const {
+  // note() takes the sink mutex, which is the documented graph -> sink order (output_row.h).
+  std::lock_guard l(mu_);
+  const auto it = rows_.find(outputId);
+  if (it == rows_.end()) return std::nullopt;
+  RowStats s;
+  s.offered = it->second.offered;
+  s.delivered = it->second.row->delivered();
+  s.dropped = it->second.row->dropped();
+  s.faulted = it->second.row->faulted();
+  s.note = it->second.row->note();
+  return s;
+}
+
 }  // namespace ob

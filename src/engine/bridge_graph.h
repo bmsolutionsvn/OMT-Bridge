@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -59,6 +60,14 @@ class BridgeGraph {
   size_t hubCount() const;
   size_t rowCount() const;
   uint64_t offeredToRow(const std::string& outputId) const;
+
+  // A snapshot of one row's counters, for the state reply. nullopt when no such row exists.
+  struct RowStats {
+    uint64_t offered = 0, delivered = 0, dropped = 0;
+    bool faulted = false;
+    std::string note;
+  };
+  std::optional<RowStats> rowStats(const std::string& outputId) const;
 
  private:
   // Caller holds mu_. apply() and publish() use these, never the locked public ones.

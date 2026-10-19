@@ -4,6 +4,7 @@
 #include <exception>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -37,6 +38,11 @@ void CommandRouter::setBridge(Bridge b) {
   for (const Output& o : bridge_.outputs) seed(o.id, 'o', nextOutputId_);
 }
 
+void CommandRouter::setRuntime(SourceRuntimeFn sources, OutputRuntimeFn outputs) {
+  sourceRuntime_ = std::move(sources);
+  outputRuntime_ = std::move(outputs);
+}
+
 std::string CommandRouter::handle(const ClientId&, const std::string& text) {
   // ONE try around the whole body. Every field read below (j.value(...), j["id"], ...) throws
   // nlohmann's type_error.302 on a wrong-typed value — `{"cmd":"add-output","sourceId":42}` — and
@@ -52,15 +58,43 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
 
     if (cmd == "state") {
       json sources = json::array();
-      for (const Source& s : bridge_.sources)
-        sources.push_back({{"id", s.id}, {"kind", std::string(toString(s.kind))}, {"address", s.address}});
+      for (const Source& s : bridge_.sources) {
+        json row = {{"id", s.id},
+                    {"kind", std::string(toString(s.kind))},
+                    {"address", s.address}};
+        // Runtime keys appear only when the engine has a row for this id: a loaded-but-not-running
+        // model must not claim a state it never measured.
+        if (sourceRuntime_) {
+          if (const auto rt = sourceRuntime_(s.id)) {
+            row["state"] = std::string(toString(rt->state));
+            if (rt->format.known) {
+              row["width"] = rt->format.width;
+              row["height"] = rt->format.height;
+              row["fpsN"] = rt->format.fpsN;
+              row["fpsD"] = rt->format.fpsD;
+              row["alpha"] = rt->format.alpha;
+            }
+          }
+        }
+        sources.push_back(std::move(row));
+      }
       json outputs = json::array();
-      for (const Output& o : bridge_.outputs)
-        outputs.push_back({{"id", o.id},
-                           {"sourceId", o.sourceId},
-                           {"target", std::string(toString(o.target))},
-                           {"name", o.name},
-                           {"advertised", bridge_.advertisedName(o)}});
+      for (const Output& o : bridge_.outputs) {
+        json row = {{"id", o.id},
+                    {"sourceId", o.sourceId},
+                    {"target", std::string(toString(o.target))},
+                    {"name", o.name},
+                    {"advertised", bridge_.advertisedName(o)}};
+        if (outputRuntime_) {
+          if (const auto rt = outputRuntime_(o.id)) {
+            row["state"] = std::string(toString(rt->state));
+            row["note"] = rt->note;
+            row["delivered"] = rt->delivered;
+            row["dropped"] = rt->dropped;
+          }
+        }
+        outputs.push_back(std::move(row));
+      }
       return json{{"ok", true}, {"name", bridge_.name}, {"sources", sources}, {"outputs", outputs}}.dump();
     }
 

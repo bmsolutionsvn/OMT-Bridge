@@ -80,6 +80,30 @@ TEST_CASE("add-output and set-output-source edit the model, and remove-source de
   CHECK(router.bridge().outputs[0].sourceId.empty());  // ...with its source detached
 }
 
+TEST_CASE("state reports runtime liveness when the engine supplies it") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"OMT","address":"PC"})");
+  router.setRuntime(
+      [](const std::string& id) -> std::optional<ob::SourceRuntime> {
+        ob::SourceRuntime rt;
+        rt.state = ob::SignalState::Live;
+        rt.format = ob::FormatView{1920, 1080, 60, 1, false, true};
+        return id == "s1" ? std::optional<ob::SourceRuntime>(rt) : std::nullopt;
+      },
+      [](const std::string&) { return std::nullopt; });
+
+  const auto reply = router.handle(ob::ClientId{"c1"}, R"({"cmd":"state"})");
+  CHECK(reply.find("\"state\":\"live\"") != std::string::npos);
+  CHECK(reply.find("\"width\":1920") != std::string::npos);
+}
+
+TEST_CASE("state omits runtime keys when the engine supplies nothing") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"OMT","address":"PC"})");
+  const auto reply = router.handle(ob::ClientId{"c1"}, R"({"cmd":"state"})");
+  CHECK(reply.find("\"state\":") == std::string::npos);
+}
+
 TEST_CASE("setBridge seeds the id counter past a loaded model") {
   ob::CommandRouter router;
   ob::Bridge loaded;

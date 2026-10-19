@@ -3,14 +3,18 @@
 // server. Closing the UI drops a control connection; it must never touch the graph.
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include "core/bridge_model.h"
 #include "engine/bridge_graph.h"
 #include "engine/command_router.h"
 #include "engine/control_server.h"
+#include "engine/omt_sink.h"
+#include "engine/omt_source.h"
 
 namespace ob {
 
@@ -42,6 +46,15 @@ class Engine {
  private:
   std::string handleCommand(const ClientId& client, const std::string& text);
 
+  // The graph's running hook, called synchronously during apply() — i.e. with controlMu_ held when
+  // apply() came from a command. It only installs the adapter transition callback.
+  void onHubCreated(SourceHub& hub, const Source& source);
+  void startAdapter(const std::string& sourceId);  // controlMu_ held
+  void stopAdapter(const std::string& sourceId);   // controlMu_ held
+
+  std::optional<SourceRuntime> sourceRuntime(const std::string& id) const;
+  std::optional<OutputRuntime> outputRuntime(const std::string& id) const;
+
   int controlPort_;
   std::string token_;
   std::string bridgeFile_;
@@ -50,7 +63,15 @@ class Engine {
   // model/counter — and would call BridgeGraph::apply() from two threads, breaking its no-concurrent-apply rule (it holds raw row/hub pointers across a deliberate unlock).
   std::mutex controlMu_;
   CommandRouter router_;
-  BridgeGraph graph_{SinkFactory{}};
+  // The model the graph was last reconciled against. Stored before graph_.apply() because the
+  // running hook (startAdapter) reads it while apply() runs.
+  Bridge model_;                                               // controlMu_
+  std::map<std::string, std::unique_ptr<OmtSource>> adapters_;  // controlMu_
+  // A state callback runs on an adapter thread, and stopAdapter() joins that adapter while
+  // holding controlMu_, so this map must never be guarded by controlMu_.
+  mutable std::mutex runtimeMu_;                                // guards sourceRuntime_
+  std::map<std::string, SourceRuntime> sourceRuntime_;          // runtimeMu_
+  BridgeGraph graph_;
   std::unique_ptr<ControlServer> server_;
   std::atomic<uint64_t> controlConnections_{0};
 };
