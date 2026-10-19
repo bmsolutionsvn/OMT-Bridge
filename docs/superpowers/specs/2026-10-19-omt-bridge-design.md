@@ -1,9 +1,13 @@
 # OMT Bridge — Design
 
 Date: 2026-10-19
-Status: draft for review, revised 2026-10-19 after the first review (canonical frame is
-UYVY/UYVA, premultiplication settled from the NDI docs, tally from downstream, audio at the
-source's rate).
+Status: draft for review. Revised 2026-10-19 after the first review (canonical frame is
+UYVY/UYVA, premultiplication from the NDI docs, tally from downstream, audio at the
+source's rate), then checked against the workspace: OMT-HX `b58414b` already provides the
+UYVY/UYVA API with tests, libomt and NDI share the `UYVY`/`UYVA`/`P216`/`PA16` FourCC
+values, and the OMT-HX measurement figures are real. Updated again 2026-10-19 for OMT-HX
+`ae96aa1`: one frame less latency per HX hop, new measured figures (6.3, 16), and the
+coded-relay and GPU re-code paths the library now has (18.8, 18.9).
 Upstream repository: https://github.com/bmsolutionsvn/OMT-Bridge (MIT).
 
 This is a new product in the BM Solutions ecosystem, beside BreadStream, BreadCall,
@@ -56,11 +60,13 @@ Locked with the owner on 2026-10-19.
 3. **N×M routing.** N sources, M outputs; every output picks its own source. There is
    no per-input ownership of outputs.
 4. **Native Qt Widgets UI, no web layer.** The engine stays C++/D3D11.
-5. **No scale target in v1, and no GPU colour path.** Colour work stays on the CPU. v1
-   adds UYVY/UYVA entry points to `omthx` (Section 6.3) so the bridge's 4:2:2 frames reach
-   the HX encoder without a colour matrix; the remaining throughput ceiling is documented,
-   not engineered away. (A GPU colour path is a later milestone, not v1.) *Revised after
-   review: the original decision used `omthx`'s BGRA path unchanged.*
+5. **No scale target in v1, and no GPU colour path.** Colour work stays on the CPU. The
+   bridge's 4:2:2 frames reach the HX encoder without a colour matrix through the
+   UYVY/UYVA API `omthx` already provides (OMT-HX `b58414b`, Section 6.3); the remaining
+   throughput ceiling is documented, not engineered away. (A GPU colour path is a later
+   milestone, not v1.) *Revised after review: the original decision used `omthx`'s BGRA
+   path unchanged, and assumed the UYVY API had to be built.* `omthx` has since gained a
+   GPU re-code path (`PixelFormat::Gpu`, OMT-HX `7d90732`); v1 does not use it (18.9).
 6. **Monitoring is a thumbnail decoded from a keyframe**, per source. No live video
    preview.
 7. **Alpha is preserved where the chain allows, and dropped and labelled where it does
@@ -83,14 +89,17 @@ Locked with the owner on 2026-10-19.
 - A saved Bridge file, and a headless engine that survives the UI closing.
 - Audio passthrough with the source's channel count and sample rate.
 - Tally passed upstream: a source is on air when an output it feeds is on air downstream.
-- UYVY/UYVA entry points added to `omthx` (in the OMT-HX repo), additive to its BGRA API.
+- Use of the UYVY/UYVA API `omthx` already provides (OMT-HX `b58414b`, additive to its
+  BGRA API and already under its own tests), at OMT-HX `ae96aa1` or later (14.3).
 
 ### 3.2 Out of v1, named so nothing is assumed
 
 - **WAN tunnel, Host and Join** — v2.
 - **NDI|HX output** — needs the NDI Advanced SDK and certification.
-- **Relay / "Do Not Transcode".** v1 always decodes and re-encodes; there is no coded
-  pass-through (Section 16).
+- **Relay / "Do Not Transcode".** v1 always decodes and re-encodes. `omthx` now carries
+  coded frames through untouched (`PixelFormat::Coded`, 18.8), so this is a small later
+  milestone, not a library gap (Section 16).
+- **GPU re-code** of HX sources in video memory (`PixelFormat::Gpu`, 18.9).
 - **PTZ and KVM** — NDI-only features with no OMT counterpart.
 - **Custom metadata** passthrough beyond what the transports already carry.
 - **Live video preview** — thumbnails only.
@@ -188,8 +197,11 @@ own master clock in `docs/superpowers/specs/2026-10-17-no-master-clock-design.md
 ### 6.3 Canonical frame
 
 **The engine's one frame type is 8-bit 4:2:2 YUV: `UYVY`, or `UYVA` when the frame
-carries alpha**, with `alpha` and `premultiplied` flags. BT.709 for HD, BT.601 for SD,
-limited range (16–235), as NDI defines `UYVY`.
+carries alpha**, with `alpha` and `premultiplied` flags. Limited range (16–235) for luma
+and chroma; full range (0–255) for the alpha plane, which is how NDI documents its alpha
+channel. Colour space follows libomt's rule (`libomt.h`, `OMTColorSpace`): BT.601 below
+720 lines, BT.709 at and above. That matches NDI for SD and HD; NDI adds Rec.2020 at UHD,
+where libomt does not (Section 16).
 
 Why not BGRA: both full-bandwidth codecs are 4:2:2 YUV inside. libvmx converts BGRA to
 YUV 4:2:2:4 before coding (`VMX_BGRAToYUV4224`, `libvmx/src/vmxcodec.cpp`), and NDI's
@@ -203,24 +215,31 @@ Every input adapter delivers this frame; every output adapter encodes from it. N
 internal format exists, which is what makes the matrix (Section 7) have no special cases.
 16-bit (`P216`/`PA16`) is a later extension of the same frame, not v1.
 
-**The `omthx` change this needs (OMT-HX repo, additive).** `omthx` today speaks BGRA
-only: `Receiver` asks libomt for `OMTPreferredVideoFormat_BGRA` and `Sender` packs BGRA to
-NV12 with a colour matrix. v1 adds:
+**The `omthx` API this needs already exists — it is not v1 work.** OMT-HX `b58414b`
+("UYVY/UYVA send and receive, with no colour matrix") added it, additive to the BGRA API,
+with its own tests:
 
-- `Sender::sendVideoUyvy(format, uyvy, alpha plane or null, premultiplied, timestamp)`.
-  Full mode hands libomt `OMTCodec_UYVY`/`OMTCodec_UYVA` directly. HX mode makes the NV12
-  picture with **no colour matrix**: luma through a range table, chroma averaged
-  vertically 4:2:2 → 4:2:0, alpha copied into the stacked rows (OMT-HX §7). Premultiplying
-  straight input is done in YUV, `Y' = 16 + (Y−16)·a`, `C' = 128 + (C−128)·a`, which equals
-  premultiplying in RGB because the matrix is linear; chroma uses the mean alpha of the
-  pixels it covers.
-- A `Receiver` option to return `UYVY`/`UYVA`. Full mode asks libomt for
-  `OMTPreferredVideoFormat_UYVYorUYVA`. HX mode makes UYVY from the decoded NV12 by
-  repeating chroma rows and copies the stacked alpha rows into the alpha plane.
+- `Sender::sendVideoUyvy(format, uyvy, stride, alpha, alphaStride, premultiplied,
+  timestamp)`. Full mode hands libomt `OMTCodec_UYVY`/`OMTCodec_UYVA` directly (zero copy
+  when the alpha plane follows the UYVY plane at `stride / 2`, which is exactly OMT's and
+  NDI's `UYVA` layout). HX mode makes the NV12 picture with **no colour matrix**
+  (`pure.cpp`, `packUyvy`): luma through a range table, chroma averaged vertically
+  4:2:2 → 4:2:0, alpha stacked (OMT-HX §7). Straight input is premultiplied in YUV
+  (`Y' = 16 + (Y−16)·a`, `C' = 128 + (C−128)·a`), equal to premultiplying in RGB because
+  the matrix is linear; chroma uses the mean alpha of the pixels it covers.
+- `Receiver(address, PixelFormat::Uyvy)` returns the 4:2:2 picture in `VideoFrame::uyvy`,
+  with the alpha plane immediately after it in the same layout.
+- `Sender::sendVideoNv12` also exists (no alpha; HX, and plain OMT in limited range since
+  `ae96aa1`); the bridge does not use it.
 
-BreadCamera and BreadStudio keep the BGRA API unchanged. The cost of the new HX path is
-expected to be well under the 5 ms BGRA ↔ NV12 pass (OMT-HX `docs/MEASUREMENTS.md`) but
-is **measured in M2, not assumed**.
+Measured cost on the OMT-HX test PC (OMT-HX `docs/MEASUREMENTS.md`, 2026-10-19): `packUyvy`
+takes 2.1 ms for a 1080p straight-alpha frame, down from 7.3 ms with a multiply-shift in
+place of the divide. `packUyvy` and `unpackUyvy` both run in bands on the thread pool.
+OMT-HX publishes no separate no-alpha or unpack timings, so none are quoted here; M2
+measures the bridge's own per-output cost (Section 16).
+
+OMT-HX's tests already cover the UYVY/UYVA round trip; OMT Bridge's task is to **consume**
+this API, not add it. Pin OMT-HX at `ae96aa1` or later (14.3).
 
 ### 6.4 SourceHub
 
@@ -296,8 +315,8 @@ Four thin adapters, all mapping to and from the UYVY/UYVA frame:
 
 | Adapter | Wraps | Notes |
 |---|---|---|
-| `OmtSource` | `omthx::Receiver`, UYVY option | reads Full **and** HX; `omthx::discover()` fills the source list; `omthx::probe()` reads format when not streaming; `premultiplied` from the frame |
-| `OmtSink` | `omthx::Sender::sendVideoUyvy` | `Mode::{Full,Hx}` + `Quality` + `Codec::{Hevc,H264}`; passes `premultiplied` through |
+| `OmtSource` | `omthx::Receiver(addr, PixelFormat::Uyvy)` | reads Full **and** HX; `omthx::discover()` fills the source list; `omthx::probe()` reads format when not streaming; `premultiplied` from the frame; `VideoFrame::uyvy` plus the alpha plane |
+| `OmtSink` | `omthx::Sender::sendVideoUyvy(fmt, uyvy, stride, alpha, alphaStride, premultiplied, ts)` | `Mode::{Full,Hx}` + `Quality` + `Codec::{Hevc,H264}`; passes `premultiplied` through |
 | `NdiSource` | NDI Find + Recv | `NDIlib_recv_color_format_fastest` (UYVY, or UYVA with alpha), bandwidth highest; FLTP audio at the source's rate; NDI\|HX is decoded by the NDI SDK |
 | `NdiSink` | NDI Send | `UYVA` when alpha, else `UYVY`; straight alpha only (9.1); **Full only** |
 
@@ -331,9 +350,10 @@ copy; the optimisations are in 9.2 and 9.3.
 
 The conventions differ by transport, and are documented, not assumed:
 
-- **NDI is straight.** NDI SDK, *Frame Types*: `BGRA` and `RGBA` — *"This data is not
-  pre-multiplied."* NDI documents no convention for `UYVA`; v1 treats it as straight,
-  consistent with `BGRA`, and verifies it (18.1).
+- **NDI is straight where documented.** The NDI SDK's *Frame Types* page marks `BGRA`,
+  `BGRX`, `RGBA` and `RGBX` — *"This data is not pre-multiplied."* **`UYVY` and `UYVA`
+  carry no such statement**, and neither do the vendored headers. v1 treats `UYVA` as
+  straight, consistent with the RGB formats, and verifies it (18.1).
 - **OMT-HX is premultiplied.** OMT-HX §7: *"the fill is multiplied by alpha before
   encoding"*; `omthx` reports it as `VideoFrame::premultiplied`.
 - **Full OMT is either**, and says which with `OMTVideoFlags_PreMultiplied`.
@@ -497,7 +517,7 @@ virtual camera, preview service.
 
 | Dependency | How | Notes |
 |---|---|---|
-| OMT-HX | git submodule; `add_subdirectory`; `target_link_libraries(... omthx)`; `omthx_copy_runtime(...)` | brings `libomt.dll`, `libvmx.dll`; pinned at or after the commit that adds the UYVY/UYVA API (6.3) |
+| OMT-HX | git submodule; `add_subdirectory`; `target_link_libraries(... omthx)`; `omthx_copy_runtime(...)` | brings `libomt.dll`, `libvmx.dll`; **pinned at `ae96aa1` or later**: the UYVY/UYVA API (6.3) and the same-call encoder packets that took a frame out of every HX hop (16) |
 | FFmpeg (`avcodec`, `swscale`, `nvcodec`, `amf`) | vcpkg | required by OMT-HX |
 | NDI SDK | vendored like `BreadStudio/breadstudio/ndi/ndi-sdk` | header + import lib + runtime DLL; guarded by `OB_WITH_NDI`, mirroring `BC_WITH_NDI` |
 | Qt 6 (`qtbase`, Widgets) | vcpkg | **LGPLv3 — dynamically linked; Qt DLLs shipped, never statically linked** |
@@ -527,12 +547,11 @@ GitHub Actions on a Windows runner: configure, build, run tests — mirroring
 - The command router's input validation (mirroring BreadCamera's
   `engine/command_router.cpp` message style).
 
-In the OMT-HX repo, alongside its existing tests:
-
-- `sendVideoUyvy` / UYVY receive round trip in both modes, with and without alpha.
-- YUV-domain premultiply equals RGB premultiply within ±1 on a test pattern.
-- The YUV range OMT's `UYVY` uses (black at 16 or 0), checked against libvmx, so 6.3's
-  "limited range" is confirmed rather than assumed.
+Already delivered by OMT-HX (`b58414b` onwards) and covered by its own tests: the `sendVideoUyvy` /
+UYVY-receive round trip in both modes with and without alpha, and YUV-domain premultiply
+against RGB premultiply on a test pattern. OMT Bridge adds no tests there; it asserts the
+range it relies on (UYVY limited 16–235, alpha full range) as a regression, since
+`omthx.h` now documents it.
 
 ### 15.2 End-to-end, on loopback (the real test)
 
@@ -562,18 +581,21 @@ library rather than with itself:
 
 ## 16. Limits of v1
 
-- **No relay.** `omthx::Receiver` returns decoded pictures only, so an OMT-HX → OMT-HX hop
-  with identical settings still decodes and re-encodes. NDI Bridge's *Do Not Transcode* has
-  no equivalent here. This is a future milestone, not a defect.
-- **CPU work per HX hop.** The UYVY path removes `omthx`'s BGRA ↔ NV12 colour matrix (about
-  5 ms per 1080p frame each way), but each HX output still does a CPU 4:2:2 → 4:2:0 pass
-  and a copy to the encoder, and each HX source a copy back from the D3D11 decoder. There is
-  **no scale target in v1** and no GPU colour path; the per-output cost is measured in M2
-  and documented, and the GPU milestone is deferred.
-- **HX → HX alpha at 1080p60 is the measured ceiling case.** The bridge decodes and
-  encodes in one process, which is OMT-HX's "sender and receiver on one PC" run: a median
-  of 57 fps received at 1080p60 alpha (OMT-HX `docs/MEASUREMENTS.md`, BGRA path). 720p60
-  and 1080p30 alpha hold. M2 re-measures this on the UYVY path.
+- **No relay in v1.** An OMT-HX → OMT-HX hop with identical settings still decodes and
+  re-encodes. `omthx` can already pass coded frames through (18.8), so NDI Bridge's *Do Not
+  Transcode* is a bridge feature still to build, not a library limit.
+- **CPU work per HX hop.** The UYVY path has no colour matrix: `packUyvy` costs 2.1 ms for a
+  1080p straight-alpha frame and both passes run threaded (6.3). Each HX output still copies its
+  picture to the encoder, and each HX source copies it back from the D3D11 decoder (about
+  4 to 7 ms of decode and copy at 1080p on the test PC, shared by the source's outputs).
+  There is **no scale target in v1** and no GPU colour path; M2 measures the bridge's own
+  per-output cost and documents it.
+- **HX hop latency and ceiling.** On OMT-HX's "sender and receiver on one PC" run, the
+  case closest to the bridge's decode and encode in one process, a hop measured 10 ms at
+  720p60, 15 ms at 1080p60 and 27 ms at 1080p60 alpha, all holding real time; 1440p60 and
+  1080p120 hold too, 4K reaches about 43 fps (OMT-HX `docs/MEASUREMENTS.md`, 2026-10-19,
+  BGRA path; before that work 1080p60 alpha received a median of 57 fps). M2 re-measures
+  on the bridge's UYVY path.
 - **No NDI|HX output** (NDI Advanced SDK).
 - **NDI|HX input alpha is present only when the HX sender stacks it** (NDI Bridge,
   TriCaster, Vectar Plus, Vizrt Connect); most HX cameras send none. When present, the NDI
@@ -581,6 +603,15 @@ library rather than with itself:
   only.
 - **NDI `UYVA` premultiplication is undocumented**; v1 treats it as straight like `BGRA`
   and confirms it in the smoke test (18.1).
+- **UHD colour space.** NDI tags UHD (`xres > 1920 || yres > 1080`) as **Rec.2020**, while
+  libomt knows only BT.601 and BT.709 (`OMTColorSpace`). A UHD NDI ⇄ OMT hop would carry
+  NDI's Rec.2020 picture under a BT.709 tag. v1 has no UHD scale target; the hardware
+  decoder still decodes the picture, but the OMT side does not know Rec.2020. Named, not
+  fixed.
+- **NDI `fastest` delivers fields.** `NDIlib_recv_color_format_fastest` documents that
+  `allow_video_fields` is true and individual fields are always delivered, so an
+  interlaced NDI source arrives as field-0/field-1 frames. v1 passes each frame through as
+  it comes; deinterlacing is not in scope.
 - **No tally into NDI**, no PTZ, no KVM, no live preview, no custom metadata.
 
 ## 17. Risks
@@ -588,7 +619,7 @@ library rather than with itself:
 | Risk | Mitigation |
 |---|---|
 | NDI `UYVA` turns out premultiplied → fringing on keyed NDI | `BGRA` is documented straight; `UYVA` is the one assumption, isolated in `toStraight()` and the 9.1 table, checked in the smoke test before M3 ships (18.1) |
-| The `omthx` UYVY API breaks BreadCamera or BreadStudio | Additive only: the BGRA API and its behaviour are unchanged, and OMT-HX's existing tests must still pass |
+| A newer OMT-HX breaks BreadCamera or BreadStudio | Additive API only; OMT-HX's tests must pass, and both apps are rebuilt and tested against the pinned commit (done for `ae96aa1`) |
 | CPU work per HX hop caps usable outputs at a handful | UYVY path removes the colour matrix; remaining cost measured in M2 and documented; GPU converter already lifted into the repo for the next milestone |
 | Alpha flapping on a source that is opaque some of the time | 2 s hysteresis before dropping alpha (9.2) |
 | Qt LGPL and NDI SDK redistribution terms | Qt dynamically linked only; NDI runtime shipped per SDK terms, or required as a prerequisite if terms do not allow it (18.2) |
@@ -597,10 +628,12 @@ library rather than with itself:
 
 ## 18. Open decisions for the owner
 
-1. **NDI premultiplication convention — mostly settled.** `BGRA`/`RGBA` are straight per
-   the NDI SDK's *Frame Types* ("not pre-multiplied"). `UYVA` is undocumented and treated as
-   straight; the NDI Studio Monitor smoke test (15.3) confirms it before the NDI output
-   milestone ships. If it proves premultiplied, only the 9.1 table's NDI rows change.
+1. **NDI premultiplication convention — mostly settled.** The NDI *Frame Types* page
+   states "not pre-multiplied" for `BGRA`, `BGRX`, `RGBA` and `RGBX` only; `UYVY`/`UYVA`
+   are silent, and so are the vendored headers. v1 treats `UYVA` as straight, and the NDI
+   Studio Monitor smoke test (15.3) confirms it before the NDI output milestone ships. If
+   it proves premultiplied, only the 9.1 table's NDI rows change (NDI-in sets the flag, and
+   `toStraight()` stops applying to NDI).
 2. **NDI runtime distribution.** Ship the NDI runtime DLL with the installer, or require
    NDI Tools / the NDI Runtime as a prerequisite? Depends on the SDK redistribution terms.
 3. **HEVC decoder on Windows.** HEVC decode may need the Microsoft Store extension on a
@@ -614,7 +647,23 @@ library rather than with itself:
    `<Bridge.name> (<Output.name>)` (5.3). Decide whether the UI forces that advertised
    string to be unique across the machine (discovery needs unique names), or allows
    duplicates and lets the operator resolve a collision.
-8. **A relay mode later** — worth a v1.x milestone if bandwidth matters more than CPU.
+8. **Relay ("Do Not Transcode") as v1.x.** The library side exists (OMT-HX `7d90732`):
+   `Receiver(addr, PixelFormat::Coded)` + `receiveCoded` hands back VMX or HX frames
+   undecoded, starting at a keyframe and waiting for one after a loss; `Sender::sendCoded`
+   sends them on with the source's frame numbers, so a gap stays visible downstream; and
+   `Sender::keyframeRequested` / `Receiver::requestKeyframe` carry a late receiver's
+   keyframe request upstream. One coded receive feeds any number of relay senders with no
+   codec work at all. What the bridge would add: a per-output `transcode: Auto | Off`, where
+   Off is allowed only when the output's target, codec and alpha match the source's. The
+   drop-oldest queue (6.5) is safe for coded frames because a dropped HX frame shows as a
+   gap and triggers a forwarded keyframe request. Recommended for v1.x.
+9. **GPU re-code later.** OMT-HX `7d90732` also added `PixelFormat::Gpu`: a decoded HX
+   picture stays a D3D11 texture (`VideoFrame::gpu`) and `Sender::sendVideo(frame)` encodes
+   it in video memory (`hevc_amf (d3d11)` and `h264_amf (d3d11)` verified on the test PC),
+   with `omthx::download` to copy one out for non-HX outputs and thumbnails. For an HX source
+   whose outputs are all HX (a codec or quality change), this removes both CPU copies. It
+   changes the SourceHub's frame (a texture instead of UYVY), so it is a decision for after
+   v1, against decision 5.
 
 ## 19. Alternatives considered
 
@@ -640,7 +689,7 @@ library rather than with itself:
 |---|---|---|
 | M0 | Repo skeleton: CMake + vcpkg + presets, OMT-HX submodule, NDI SDK vendored, empty engine + empty Qt window, CI builds | CI green; `OMT-Bridge.exe` opens and launches `OMT-Bridge-Engine.exe` |
 | M1 | Engine core: canonical Frame, SourceHub, Output row, bridge graph, reference counting, control server, Supervisor | unit tests for the graph pass; outputs survive a control-channel disconnect |
-| M2 | `omthx` UYVY/UYVA API (OMT-HX repo, 6.3); OMT / OMT-HX in and out: `OmtSource`, `OmtSink`, opaque-alpha detection, H.264 alpha rule | OMT-HX's tests (old and new) pass; the `omthx-send` → Bridge → `omthx-recv --dump` test passes; the per-HX-output cost and the 1080p60 alpha HX → HX rate are measured and written into Section 16 |
+| M2 | OMT / OMT-HX in and out: `OmtSource`, `OmtSink` on the existing `omthx` UYVY/UYVA API, opaque-alpha detection, H.264 alpha rule | OMT-HX's tests still pass at the pinned commit; the `omthx-send` → Bridge → `omthx-recv --dump` test passes; the per-HX-output cost and the 1080p60 alpha HX → HX rate are measured and written into Section 16 |
 | M3 | NDI in and out: `NdiSource`, `NdiSink`, `toStraight()`, tally upstream | NDI self-loop and premultiplied-to-NDI tests pass; NDI alpha smoke test passes (18.1) |
 | M4 | UI: Sources, Outputs, Matrix, states, settings, Bridge file, confirms | a full manual pass; Bridge file reloads on restart |
 | M5 | Hardening: thumbnails, tally, error blocks, alpha labelling, soak | the success criteria in 1.1 are demonstrated |
