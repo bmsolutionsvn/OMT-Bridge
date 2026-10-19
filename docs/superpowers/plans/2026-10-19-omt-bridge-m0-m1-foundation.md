@@ -2867,6 +2867,23 @@ TEST_CASE("a fresh heartbeat keeps a running engine from being killed") {
   sup.poll(t0 + std::chrono::seconds(9));  // past the grace, but the beat is only 1 s old
   CHECK(l.killed == 0);
 }
+
+// The policy's headline behaviour: five quick restarts inside the window, then one per 10 s.
+TEST_CASE("rapid relaunches are throttled to the slow interval once the budget is spent") {
+  FakeLauncher l;  // dead throughout
+  ob::Supervisor sup(l);
+  const auto t0 = Clock::now();
+
+  for (int i = 0; i < 5; ++i) sup.poll(t0 + std::chrono::seconds(i));  // 1 s apart, inside 60 s
+  CHECK(l.launched == 5);
+  CHECK(sup.crashLooping(t0 + std::chrono::seconds(5)));
+
+  sup.poll(t0 + std::chrono::seconds(6));  // inside the window and the slow interval: throttled
+  CHECK(l.launched == 5);
+
+  sup.poll(t0 + std::chrono::seconds(15));  // 11 s since the last attempt: one more is allowed
+  CHECK(l.launched == 6);
+}
 ```
 
 > These three cases encode the lifted `Supervisor`'s actual policy, which the earlier draft of this
@@ -2892,7 +2909,7 @@ Run:
 ```powershell
 cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: `[doctest] Status: SUCCESS!` — the three supervisor cases pass alongside the existing fifty.
+Expected: `[doctest] Status: SUCCESS!` — the four supervisor cases pass alongside the existing fifty.
 
 - [ ] **Step 4: Commit**
 
@@ -3183,6 +3200,20 @@ git commit -m "feat(engine): headless engine, bridge load, and the UI-close guar
 ```
 
 **M1 is complete when:** `ob_tests.exe` passes all tasks' tests, and `omt-bridge-engine.exe` answers `{"cmd":"state"}` over the token-authenticated loopback channel while its graph keeps running after a client disconnects.
+
+---
+
+### Notes for M2 — the launcher is lifted but deliberately not wired
+
+Task 14 lifted BreadCamera's `ProcessLauncher`/`Supervisor` verbatim, and this milestone exercises only the `Supervisor` (by tests). Nothing launches an engine in M1 — the UI is a stub — so three BreadCamera-specific assumptions in the lift are **not yet** re-pointed. A code-quality review found them; they are silent at runtime rather than compile errors, so M2 must address them before the UI adopts an engine:
+
+1. **BreadCamera's identity is hard-coded.** `isEngineProcess(pid)` matches `L"breadcamera-engine.exe"` and `engineInstanceRunning()` opens `L"Local\\BreadCameraEngine"`. Both are free functions with no parameters, so no caller can re-point them without editing the lift. Until they are aimed at `omt-bridge-engine.exe` and a `Local\OMTBridgeEngine` mutex (parameterise them, or add OMT-Bridge wrappers), an adoption check silently returns false and the UI would launch a *second* engine every time.
+2. **The discovery contract has no producer.** `readDiscovery`/`waitForDiscovery` parse `{"pid":u32,"port":int,"token":str}` from a file, but this milestone's engine writes no such file — it prints `READY <token>` on stdout and reads `--port/--token/--bridge`. M2 must pick one: either add a `--discovery <file>` writer (atomic tmp + rename, as BreadCamera's engine does) and point the launcher at `%LOCALAPPDATA%\OMTBridge\engine.json`, or drive pid/port/token from the `READY` line and drop the file path.
+3. **The engine takes no single-instance mutex.** BreadCamera's engine creates `Local\BreadCameraEngine` and exits 3 if it already exists; `engineInstanceRunning()` exists only to notice that mutex. Without it, two engines can bind the same port. M2 adds the mutex (with the OMT-Bridge name) before the engine starts listening.
+
+Two smaller M2 items: `Supervisor::poll` holds its mutex across the virtual `launcher_.launch()`/`kill()` calls (a `kill()` can block ~2 s in `WaitForSingleObject`), so poll from a dedicated thread and keep `waitForDiscovery` out of `launch()`; and delete `ProcessLauncher`'s copy constructor — it owns a raw `HANDLE` and a copy would `CloseHandle` it twice.
+
+Two tests to add in M2 alongside those: a discovery round trip for OMT-Bridge's own schema, and `stopSupervising()` halting relaunches.
 
 ---
 
