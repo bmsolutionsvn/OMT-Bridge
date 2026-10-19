@@ -62,6 +62,7 @@ target_link_libraries(ob_core PUBLIC nlohmann_json::nlohmann_json)
 add_library(ob_engine STATIC
   src/engine/source_hub.cpp   # Tasks 11-15 append output_row, bridge_graph, command_router, control_server, engine
   src/engine/omt_source.cpp
+  src/engine/omt_sink.cpp
   src/engine/output_row.cpp
   src/engine/bridge_graph.cpp
   src/engine/control_server.cpp
@@ -90,6 +91,7 @@ add_executable(ob_tests
   tests/bridge_store_test.cpp
   tests/source_hub_test.cpp
   tests/output_row_test.cpp
+  tests/omt_sink_test.cpp
   tests/bridge_graph_test.cpp
   tests/alpha_gate_test.cpp
   tests/command_router_test.cpp
