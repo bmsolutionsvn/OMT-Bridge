@@ -49,6 +49,7 @@ message(STATUS "OB_WITH_NDI=${OB_WITH_NDI}")
 add_library(ob_core STATIC
   src/core/signal_state.cpp
   src/core/bridge_model.cpp
+  src/core/bridge_store.cpp
 )
 target_include_directories(ob_core PUBLIC src)
 # PUBLIC: signal_state.h includes <nlohmann/json.hpp>, and every later core header that
@@ -62,6 +63,7 @@ add_executable(ob_tests
   tests/signal_state_test.cpp
   tests/bounded_queue_test.cpp
   tests/bridge_model_test.cpp
+  tests/bridge_store_test.cpp
 )
 target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
