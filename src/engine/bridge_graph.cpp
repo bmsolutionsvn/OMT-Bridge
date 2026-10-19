@@ -14,6 +14,7 @@ void BridgeGraph::apply(const Bridge& bridge) {
   std::vector<std::pair<SourceHub*, Source>> toHook;
   std::vector<OutputRow*> toStart;
   std::vector<std::unique_ptr<OutputRow>> retired;
+  std::vector<OutputRow*> toRestart;
   std::map<std::string, int> wanted;
   try {
     std::lock_guard l(mu_);
@@ -50,7 +51,11 @@ void BridgeGraph::apply(const Bridge& bridge) {
         found = rows_.emplace(o.id, std::move(r)).first;
         found->second.row->configure(o, advertised);
       } else {
+        const bool sourceChanged = found->second.row->sourceId() != o.sourceId;
         found->second.row->configure(o, advertised);
+        // An edit detached (or retargeted) this row: restart it below, outside mu_, so a stopped or
+        // cleared queue cannot keep claiming the liveness of the source it used to read.
+        if (sourceChanged && started_) toRestart.push_back(found->second.row.get());
       }
     }
 
@@ -76,6 +81,10 @@ void BridgeGraph::apply(const Bridge& bridge) {
     while (h->refs() > 0) h->release();  // stop the removed source's adapter before it dies
   pruned.clear();
   retired.clear();                                    // join retired rows with mu_ released
+  for (OutputRow* r : toRestart) {                    // a source edit: clear the stale queue and liveness
+    r->stop();
+    r->start();
+  }
   for (auto& [hub, source] : toHook) {
     if (onHubCreated_) onHubCreated_(*hub, source);
     std::lock_guard l(mu_);

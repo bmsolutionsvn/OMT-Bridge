@@ -48,6 +48,9 @@ class Engine {
   void onControlClientDisconnected(const ClientId& client);
 
   uint64_t controlConnections() const { return controlConnections_; }
+  // Every start decision the demand path made, including the NDI branch (which has no adapter).
+  // A test-visible diagnostic: it pins that an edited source is stopped and restarted.
+  uint64_t adapterStarts() const { return adapterStarts_.load(); }
 
  private:
   std::string handleCommand(const ClientId& client, const std::string& text);
@@ -79,6 +82,7 @@ class Engine {
   BridgeGraph graph_;
   std::unique_ptr<ControlServer> server_;
   std::atomic<uint64_t> controlConnections_{0};
+  std::atomic<uint64_t> adapterStarts_{0};
 };
 
 }  // namespace ob

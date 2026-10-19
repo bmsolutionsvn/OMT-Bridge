@@ -1,14 +1,24 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <chrono>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "engine/bridge_graph.h"
 
+using namespace std::chrono_literals;
+
 namespace {
 std::unique_ptr<ob::Sink> nullSink(const ob::Output&, const std::string&) { return nullptr; }
-}
+
+class CountingSink : public ob::Sink {
+ public:
+  void deliver(const std::shared_ptr<const ob::Frame>&) override { ++count; }
+  int count = 0;
+};
+}  // namespace
 
 TEST_CASE("one source feeding two outputs counts two refs on one hub (N x M)") {
   ob::Bridge b;
@@ -251,4 +261,35 @@ TEST_CASE("removing a running source stops its adapter before the hub dies") {
   CHECK(transitions[1] == false);
   CHECK(graph.hub("s1") == nullptr);
   CHECK(graph.rowCount() == 0u);
+}
+
+TEST_CASE("clearing an output's source stops the row and clears its liveness") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "A"});
+
+  ob::BridgeGraph graph([](const ob::Output&, const std::string&) -> std::unique_ptr<ob::Sink> {
+    return std::make_unique<CountingSink>();
+  });
+  graph.apply(b);
+  graph.start();
+
+  auto f = std::make_shared<ob::Frame>();
+  f->format = ob::VideoFormat{4, 2, 60, 1, false};
+  f->uyvy.assign(f->lumaBytes(), 0x10);
+  graph.publish("s1", f);
+
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (!(graph.rowStats("o1") && graph.rowStats("o1")->live) &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  REQUIRE(graph.rowStats("o1").has_value());
+  CHECK(graph.rowStats("o1")->live);
+
+  b.outputs[0].sourceId = "";
+  graph.apply(b);
+
+  REQUIRE(graph.rowStats("o1").has_value());
+  CHECK_FALSE(graph.rowStats("o1")->live);
+  graph.stop();
 }

@@ -57,12 +57,24 @@ void Engine::applyLocked(const Bridge& bridge) {
     }
   }
 
-  graph_.apply(model_);
+  const auto restartChanged = [&] {
+    for (const auto& id : changed) {
+      try {
+        SourceHub* h = graph_.hub(id);
+        if (h != nullptr && h->running()) startAdapter(id);  // restart under the same demand
+      } catch (...) {
+        // Keep the original failure; a source that cannot restart is reported by its own state.
+      }
+    }
+  };
 
-  for (const auto& id : changed) {
-    SourceHub* h = graph_.hub(id);
-    if (h != nullptr && h->running()) startAdapter(id);  // restart under the same demand
+  try {
+    graph_.apply(model_);
+  } catch (...) {
+    restartChanged();  // the hub may still be running with the old demand
+    throw;
   }
+  restartChanged();
 }
 
 void Engine::onHubCreated(SourceHub& hub, const Source& source) {
@@ -81,6 +93,7 @@ void Engine::startAdapter(const std::string& id) {
   if (adapters_.count(id) != 0) return;
   const Source* s = model_.findSource(id);
   if (s == nullptr) return;  // removed while stopping
+  adapterStarts_.fetch_add(1);  // every start decision, including the NDI branch
   if (s->kind == SourceKind::Ndi) {
     // NDI has no adapter in M2: report it offline rather than silently Ready forever.
     std::lock_guard l(runtimeMu_);

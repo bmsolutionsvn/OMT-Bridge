@@ -10,11 +10,11 @@ using namespace std::chrono_literals;
 static ob::Bridge twoOutputsOneSource() {
   ob::Bridge b;
   b.name = "Test";
-  // NDI: no adapter and no socket, so these tests never open a network receiver. The NDI branch
-  // still records Offline on demand, which is what the lifecycle assertions below need.
+  // NDI: no adapter and no socket, and NDI targets keep OmtSink::configure from constructing a
+// sender, so these tests never touch the network.
   b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "PC"});
-  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
-  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::OmtHx, .name = "B"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "A"});
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "B"});
   return b;
 }
 
@@ -75,15 +75,16 @@ TEST_CASE("runtime state is Ready when configured, and after the last output lea
   engine.stop();
 }
 
-TEST_CASE("editing a source's address restarts its adapter") {
+TEST_CASE("editing a configured source restarts its adapter decision") {
   ob::Engine engine(0, "token");
-  auto b = twoOutputsOneSource();
-  b.sources[0].kind = ob::SourceKind::Omt;
-  b.sources[0].address = "PC";
+  auto b = twoOutputsOneSource();  // NDI source, NDI outputs: no sockets
   engine.apply(b);
   engine.start();
+  CHECK(engine.adapterStarts() == 1u);
+
   b.sources[0].address = "PC2";
-  engine.apply(b);  // no exception, adapter restarted
+  engine.apply(b);  // changed source: stop + start decision
+  CHECK(engine.adapterStarts() == 2u);
   CHECK(engine.graph().hub("s1")->refs() == 2);
   engine.stop();
 }
