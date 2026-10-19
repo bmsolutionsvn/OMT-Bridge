@@ -30,7 +30,8 @@ bool OmtSource::running() const {
 
 void OmtSource::start() {
   std::lock_guard l(mu_);
-  if (video_.joinable()) return;
+  // A stop() joins with mu_ released; until it finishes, the old loops still use the receiver.
+  if (video_.joinable() || audio_.joinable() || stopping_) return;
   stop_.store(false);
   try {
     rx_ = std::make_unique<OmtReceiverHolder>(address_);
@@ -53,6 +54,7 @@ void OmtSource::stop() {
       rx_.reset();
       return;
     }
+    stopping_ = true;
     stop_.store(true);
     v = std::move(video_);
     a = std::move(audio_);
@@ -61,7 +63,8 @@ void OmtSource::stop() {
   if (a.joinable()) a.join();
   {
     std::lock_guard l(mu_);
-    rx_.reset();  // closed only after both loops are gone
+    rx_.reset();      // closed only after both loops are gone
+    stopping_ = false;
   }
   if (onState_) onState_(SignalState::Ready, std::nullopt);
 }

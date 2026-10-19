@@ -40,6 +40,7 @@ class OmtSource {
   StateSink onState_;
   std::atomic<bool> stop_{false};
   mutable std::mutex mu_;
+  bool stopping_ = false;  // a stop is joining outside mu_; start() must not race it
   std::unique_ptr<OmtReceiverHolder> rx_;  // guarded by mu_; alive only while running
   std::thread video_, audio_;
 };
