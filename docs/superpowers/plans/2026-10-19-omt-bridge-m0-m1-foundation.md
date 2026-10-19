@@ -2559,6 +2559,48 @@ TEST_CASE("state reports the model") {
   // The symmetry that matters: what the reply writes is exactly what add-source accepts.
   CHECK(reply.find("\"kind\":\"NDI\"") != std::string::npos);
 }
+
+// A wrong-typed field must be refused, not throw: an exception here would escape a control-server
+// thread and call std::terminate.
+TEST_CASE("a wrong-typed field is refused rather than thrown on") {
+  ob::CommandRouter router;
+  const auto a = router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-output","sourceId":42})");
+  CHECK(a.find("\"ok\":false") != std::string::npos);
+  const auto b = router.handle(ob::ClientId{"c1"},
+                               R"({"cmd":"set-output-source","id":"o1","sourceId":42})");
+  CHECK(b.find("\"ok\":false") != std::string::npos);
+  const auto c = router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-output","name":true})");
+  CHECK(c.find("\"ok\":false") != std::string::npos);
+}
+
+TEST_CASE("add-output and set-output-source edit the model, and remove-source detaches dependents") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"OMT","address":"PC"})");
+  const auto made = router.handle(ob::ClientId{"c1"},
+                                  R"({"cmd":"add-output","sourceId":"s1","name":"A"})");
+  CHECK(made.find("\"ok\":true") != std::string::npos);
+
+  const auto moved = router.handle(ob::ClientId{"c1"},
+                                   R"({"cmd":"set-output-source","id":"o1","sourceId":""})");
+  CHECK(moved.find("\"ok\":true") != std::string::npos);
+
+  const auto removed = router.handle(ob::ClientId{"c1"}, R"({"cmd":"remove-source","id":"s1"})");
+  CHECK(removed.find("\"ok\":true") != std::string::npos);
+  CHECK(router.bridge().sources.empty());
+  CHECK(router.bridge().outputs.size() == 1u);         // the row is kept...
+  CHECK(router.bridge().outputs[0].sourceId.empty());  // ...with its source detached
+}
+
+TEST_CASE("setBridge seeds the id counter past a loaded model") {
+  ob::CommandRouter router;
+  ob::Bridge loaded;
+  loaded.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  router.setBridge(loaded);
+
+  const auto reply = router.handle(ob::ClientId{"c1"},
+                                   R"({"cmd":"add-source","kind":"NDI","address":"CAM"})");
+  CHECK(reply.find("\"id\":\"s2\"") != std::string::npos);  // not a duplicate "s1"
+}
 ```
 
 - [ ] **Step 3: Write `src/engine/command_router.h`**
@@ -2581,7 +2623,10 @@ class CommandRouter {
   std::string handle(const ClientId& client, const std::string& text);
 
   const Bridge& bridge() const { return bridge_; }
-  void setBridge(Bridge b) { bridge_ = std::move(b); }
+  // Loads a saved model. Seeds the id counter past every id already present, so a later
+  // add-source/add-output cannot mint a duplicate id (which would make findSource/remove-source
+  // act on the wrong row, and make a state reply list two rows with one id).
+  void setBridge(Bridge b);
 
  private:
   Bridge bridge_;
@@ -2597,7 +2642,9 @@ class CommandRouter {
 #include "engine/command_router.h"
 
 #include <algorithm>
+#include <exception>
 #include <optional>
+#include <string>
 
 #include <nlohmann/json.hpp>
 
@@ -2612,84 +2659,113 @@ std::string refuse(const std::string& message) {
 
 }  // namespace
 
+void CommandRouter::setBridge(Bridge b) {
+  bridge_ = std::move(b);
+  nextId_ = 1;
+  // Seed past every id already in the loaded model: add-source/add-output mint ids from nextId_,
+  // and a duplicate would make findSource/remove-source act on the wrong row (and make a state
+  // reply list two rows under one id).
+  const auto bump = [this](const std::string& id, char prefix) {
+    if (id.size() < 2 || id[0] != prefix) return;
+    try {
+      const int n = std::stoi(id.substr(1));
+      if (n >= nextId_) nextId_ = n + 1;
+    } catch (const std::exception&) {
+      // Not a generated id (e.g. hand-edited); leave the counter alone.
+    }
+  };
+  for (const Source& s : bridge_.sources) bump(s.id, 's');
+  for (const Output& o : bridge_.outputs) bump(o.id, 'o');
+}
+
 std::string CommandRouter::handle(const ClientId&, const std::string& text) {
-  json j;
+  // ONE try around the whole body. Every field read below (j.value(...), j["id"], ...) throws
+  // nlohmann's type_error.302 on a wrong-typed value — `{"cmd":"add-output","sourceId":42}` — and
+  // this runs on a control-server thread, where an escaping exception would call std::terminate.
+  // The router's contract is that it never throws to its caller; this is what makes that true for
+  // malformed as well as unparseable input.
   try {
-    j = json::parse(text);
+    json j = json::parse(text);
+    if (!j.is_object() || !j.contains("cmd") || !j["cmd"].is_string())
+      return refuse("every command needs a text \"cmd\"");
+
+    const std::string cmd = j["cmd"];
+
+    if (cmd == "state") {
+      json sources = json::array();
+      for (const Source& s : bridge_.sources)
+        sources.push_back({{"id", s.id}, {"kind", std::string(toString(s.kind))}, {"address", s.address}});
+      json outputs = json::array();
+      for (const Output& o : bridge_.outputs)
+        outputs.push_back({{"id", o.id},
+                           {"sourceId", o.sourceId},
+                           {"target", std::string(toString(o.target))},
+                           {"name", o.name},
+                           {"advertised", bridge_.advertisedName(o)}});
+      return json{{"ok", true}, {"name", bridge_.name}, {"sources", sources}, {"outputs", outputs}}.dump();
+    }
+
+    if (cmd == "add-source") {
+      if (!j.contains("address") || !j["address"].is_string())
+        return refuse("add-source needs a text \"address\"");
+      if (!j.contains("kind") || !j["kind"].is_string())
+        return refuse("add-source needs a text \"kind\"");
+      // Wire names come from core/bridge_model — the same table a state reply writes — so an
+      // unknown string is an error rather than a silent default.
+      const auto kind = sourceKindFromString(j["kind"]);
+      if (!kind) return refuse("add-source: unknown \"kind\": " + j["kind"].get<std::string>());
+
+      Source s;
+      s.id = "s" + std::to_string(nextId_++);
+      s.kind = *kind;
+      s.address = j["address"];
+      bridge_.sources.push_back(std::move(s));
+      return json{{"ok", true}, {"id", bridge_.sources.back().id}}.dump();
+    }
+
+    if (cmd == "remove-source") {
+      if (!j.contains("id") || !j["id"].is_string()) return refuse("remove-source needs a text \"id\"");
+      const std::string id = j["id"];
+      if (bridge_.findSource(id) == nullptr) return refuse("remove-source: no such source: " + id);
+      for (Output& o : bridge_.outputs)
+        if (o.sourceId == id) o.sourceId.clear();
+      bridge_.sources.erase(
+          std::remove_if(bridge_.sources.begin(), bridge_.sources.end(),
+                         [&](const Source& s) { return s.id == id; }),
+          bridge_.sources.end());
+      return json{{"ok", true}}.dump();
+    }
+
+    if (cmd == "add-output") {
+      if (j.contains("sourceId") && !j["sourceId"].is_string())
+        return refuse("add-output: \"sourceId\" must be text");
+      if (j.contains("name") && !j["name"].is_string())
+        return refuse("add-output: \"name\" must be text");
+      Output o;
+      o.id = "o" + std::to_string(nextId_++);
+      o.sourceId = j.value("sourceId", std::string{});
+      o.name = j.value("name", std::string{"Output " + o.id});
+      bridge_.outputs.push_back(std::move(o));
+      return json{{"ok", true}, {"id", bridge_.outputs.back().id}}.dump();
+    }
+
+    if (cmd == "set-output-source") {
+      if (!j.contains("id") || !j["id"].is_string()) return refuse("set-output-source needs a text \"id\"");
+      if (j.contains("sourceId") && !j["sourceId"].is_string())
+        return refuse("set-output-source: \"sourceId\" must be text");
+      Output* o = bridge_.findOutput(j["id"]);
+      if (o == nullptr) return refuse("set-output-source: no such output: " + j["id"].get<std::string>());
+      const std::string sid = j.value("sourceId", std::string{});
+      if (!sid.empty() && bridge_.findSource(sid) == nullptr)
+        return refuse("set-output-source: no such source: " + sid);
+      o->sourceId = sid;
+      return json{{"ok", true}}.dump();
+    }
+
+    return refuse("unknown command: " + cmd);
   } catch (const json::exception&) {
-    return refuse("input is not JSON");
+    return refuse("malformed command");
   }
-  if (!j.is_object() || !j.contains("cmd") || !j["cmd"].is_string())
-    return refuse("every command needs a text \"cmd\"");
-
-  const std::string cmd = j["cmd"];
-
-  if (cmd == "state") {
-    json sources = json::array();
-    for (const Source& s : bridge_.sources)
-      sources.push_back({{"id", s.id}, {"kind", std::string(toString(s.kind))}, {"address", s.address}});
-    json outputs = json::array();
-    for (const Output& o : bridge_.outputs)
-      outputs.push_back({{"id", o.id},
-                         {"sourceId", o.sourceId},
-                         {"target", std::string(toString(o.target))},
-                         {"name", o.name},
-                         {"advertised", bridge_.advertisedName(o)}});
-    return json{{"ok", true}, {"name", bridge_.name}, {"sources", sources}, {"outputs", outputs}}.dump();
-  }
-
-  if (cmd == "add-source") {
-    if (!j.contains("address") || !j["address"].is_string())
-      return refuse("add-source needs a text \"address\"");
-    if (!j.contains("kind") || !j["kind"].is_string())
-      return refuse("add-source needs a text \"kind\"");
-    // Wire names come from core/bridge_model — the same table a state reply writes — so an
-    // unknown string is an error rather than a silent default.
-    const auto kind = sourceKindFromString(j["kind"]);
-    if (!kind) return refuse("add-source: unknown \"kind\": " + j["kind"].get<std::string>());
-
-    Source s;
-    s.id = "s" + std::to_string(nextId_++);
-    s.kind = *kind;
-    s.address = j["address"];
-    bridge_.sources.push_back(std::move(s));
-    return json{{"ok", true}, {"id", bridge_.sources.back().id}}.dump();
-  }
-
-  if (cmd == "remove-source") {
-    if (!j.contains("id") || !j["id"].is_string()) return refuse("remove-source needs a text \"id\"");
-    const std::string id = j["id"];
-    if (bridge_.findSource(id) == nullptr) return refuse("remove-source: no such source: " + id);
-    for (Output& o : bridge_.outputs)
-      if (o.sourceId == id) o.sourceId.clear();
-    bridge_.sources.erase(
-        std::remove_if(bridge_.sources.begin(), bridge_.sources.end(),
-                       [&](const Source& s) { return s.id == id; }),
-        bridge_.sources.end());
-    return json{{"ok", true}}.dump();
-  }
-
-  if (cmd == "add-output") {
-    Output o;
-    o.id = "o" + std::to_string(nextId_++);
-    o.sourceId = j.value("sourceId", std::string{});
-    o.name = j.value("name", std::string{"Output " + o.id});
-    bridge_.outputs.push_back(std::move(o));
-    return json{{"ok", true}, {"id", bridge_.outputs.back().id}}.dump();
-  }
-
-  if (cmd == "set-output-source") {
-    if (!j.contains("id") || !j["id"].is_string()) return refuse("set-output-source needs a text \"id\"");
-    Output* o = bridge_.findOutput(j["id"]);
-    if (o == nullptr) return refuse("set-output-source: no such output: " + j["id"].get<std::string>());
-    const std::string sid = j.value("sourceId", std::string{});
-    if (!sid.empty() && bridge_.findSource(sid) == nullptr)
-      return refuse("set-output-source: no such source: " + sid);
-    o->sourceId = sid;
-    return json{{"ok", true}}.dump();
-  }
-
-  return refuse("unknown command: " + cmd);
 }
 
 }  // namespace ob
@@ -2703,7 +2779,7 @@ Run:
 ```powershell
 cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: `[doctest] Status: SUCCESS!` — the six router cases pass alongside the existing forty-one.
+Expected: `[doctest] Status: SUCCESS!` — the nine router cases pass alongside the existing forty-one.
 
 - [ ] **Step 6: Commit**
 
@@ -2859,6 +2935,7 @@ TEST_CASE("outputs survive a control-channel disconnect (the UI-close guarantee)
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "core/bridge_model.h"
@@ -2894,6 +2971,11 @@ class Engine {
   int controlPort_;
   std::string token_;
   std::string bridgeFile_;
+  // Serialises command handling. ixwebsocket runs each connection on its own thread, so two
+  // clients (or a supervisor restart overlapping a live UI) would otherwise race the router's
+  // model/counter — and would call BridgeGraph::apply() from two threads, breaking its documented
+  // one-owner-thread rule (it holds raw row/hub pointers across a deliberate unlock).
+  std::mutex controlMu_;
   CommandRouter router_;
   BridgeGraph graph_{[](const std::shared_ptr<const Frame>&) {}};
   std::unique_ptr<ControlServer> server_;
@@ -2953,6 +3035,11 @@ void Engine::onControlClientDisconnected(const ClientId&) {
 }
 
 std::string Engine::handleCommand(const ClientId& client, const std::string& text) {
+  // Commands arrive on per-connection ixwebsocket threads. Serialise the model edit together with
+  // the reconcile for two reasons: the router's model and id counter are plain members, and
+  // BridgeGraph::apply() is the single writer of hub demand — it holds raw row/hub pointers across
+  // a deliberate unlock, so a second apply() from another thread could dangle them.
+  std::lock_guard l(controlMu_);
   const std::string reply = router_.handle(client, text);
   // Every command may have edited the router's model (add-source, remove-source, add-output, …),
   // so reconcile the graph with it here. Applying unconditionally needs no per-command list:
