@@ -309,7 +309,7 @@ add_executable(ob_tests
   tests/main.cpp
   tests/frame_test.cpp
 )
-target_include_directories(ob_tests PRIVATE tests)
+target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
 ```
 
