@@ -22,6 +22,8 @@ class OutputRow {
   OutputRow(const OutputRow&) = delete;
   OutputRow& operator=(const OutputRow&) = delete;
 
+  // Lifecycle and setSourceId have a single writer: BridgeGraph serialises every row call under
+  // its own mutex. Two threads calling start() at once could assign over a live std::thread.
   void start();
   void stop();
 

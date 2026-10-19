@@ -98,3 +98,29 @@ TEST_CASE("a row can be started again after a stop") {
   row.stop();
   CHECK(row.delivered() == 2u);
 }
+
+TEST_CASE("a restart clears a previous fault") {
+  std::atomic<bool> fail{true};
+  ob::OutputRow row("o1", "s1", [&](const std::shared_ptr<const ob::Frame>&) {
+    if (fail.load()) throw std::runtime_error("sink broke");
+  });
+
+  row.start();
+  row.offer(frame(0));
+  auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (!row.faulted() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  row.stop();
+  CHECK(row.faulted());
+
+  fail.store(false);  // the sink is healthy again
+  row.start();
+  row.offer(frame(1));
+  deadline = std::chrono::steady_clock::now() + 2s;
+  while (row.delivered() < 1 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  row.stop();
+
+  CHECK_FALSE(row.faulted());
+  CHECK(row.delivered() == 1u);
+}

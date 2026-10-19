@@ -16,6 +16,9 @@ OutputRow::~OutputRow() { stop(); }
 
 void OutputRow::start() {
   if (thread_.joinable()) return;
+  // A deliberate restart retries: clear a previous fault, or a row that now works would still be
+  // reported Offline by the engine. `delivered_` is NOT reset — it is a cumulative stat.
+  faulted_.store(false);
   // A row can be started again after stop() ("Stop all outputs", then resume): stop() closed the
   // queue, so reopen it before the worker starts — otherwise its first pop returns nullopt, sees
   // `closed()`, and the worker exits immediately, delivering nothing.
