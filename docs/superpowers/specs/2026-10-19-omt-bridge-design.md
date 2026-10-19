@@ -519,10 +519,10 @@ virtual camera, preview service.
 |---|---|---|
 | OMT-HX | git submodule; `add_subdirectory`; `target_link_libraries(... omthx)`; `omthx_copy_runtime(...)` | brings `libomt.dll`, `libvmx.dll`; **pinned at `ae96aa1` or later**: the UYVY/UYVA API (6.3) and the same-call encoder packets that took a frame out of every HX hop (16) |
 | FFmpeg (`avcodec`, `swscale`, `nvcodec`, `amf`) | vcpkg | required by OMT-HX |
-| NDI SDK | vendored like `BreadStudio/breadstudio/ndi/ndi-sdk` | header + import lib + runtime DLL; guarded by `OB_WITH_NDI`, mirroring `BC_WITH_NDI` |
+| NDI 6 SDK | found where installed, like BreadCamera's `cmake/FindNDI.cmake` (`NDI_SDK_DIR`, else `C:/Program Files/NDI/NDI 6 SDK`); the runtime DLL is copied beside the exe | guarded by `OB_WITH_NDI`, mirroring `BC_WITH_NDI`. The `BreadStudio/breadstudio/ndi/ndi-sdk` copy is **headers only** and cannot be linked, so it is not the pattern to follow (18.2, 18.5) |
 | Qt 6 (`qtbase`, Widgets) | vcpkg | **LGPLv3 — dynamically linked; Qt DLLs shipped, never statically linked** |
 | ixwebsocket | vcpkg, as BreadCamera | engine control server |
-| Catch2 | vcpkg, as BreadCamera/OMT-HX | tests |
+| doctest | vcpkg, as BreadCamera/OMT-HX | tests (`find_package(doctest CONFIG REQUIRED)`) |
 
 ### 14.4 CI
 
@@ -532,7 +532,7 @@ GitHub Actions on a Windows runner: configure, build, run tests — mirroring
 
 ## 15. Testing and verification
 
-### 15.1 Unit tests (Catch2, co-located)
+### 15.1 Unit tests (doctest, co-located)
 
 - The data model and the Bridge JSON round-trip.
 - The bridge graph: reference counting (adapter runs iff referenced or thumbnail-wanted),
