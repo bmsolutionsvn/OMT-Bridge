@@ -1,5 +1,6 @@
 #include "engine/engine.h"
 
+#include <exception>
 #include <utility>
 
 #include "core/bridge_store.h"
@@ -46,17 +47,23 @@ void Engine::onControlClientDisconnected(const ClientId&) {
 
 std::string Engine::handleCommand(const ClientId& client, const std::string& text) {
   // Commands arrive on per-connection ixwebsocket threads. Serialise the model edit together with
-  // the reconcile for two reasons: the router's model and id counter are plain members, and
+  // the reconcile for two reasons: the router's model and id counters are plain members, and
   // BridgeGraph::apply() is the single writer of hub demand — it holds raw row/hub pointers across
   // a deliberate unlock, so a second apply() from another thread could dangle them.
   std::lock_guard l(controlMu_);
-  const std::string reply = router_.handle(client, text);
-  // Every command may have edited the router's model (add-source, remove-source, add-output, …),
-  // so reconcile the graph with it here. Applying unconditionally needs no per-command list:
-  // apply() moves demand by delta, so an unchanged model costs nothing and fires no transition.
-  // Without this the graph never learns about an edit, and nothing would actually start or stop.
-  graph_.apply(router_.bridge());
-  return reply;
+  try {
+    const std::string reply = router_.handle(client, text);
+    // Every command may have edited the router's model (add-source, remove-source, add-output, …),
+    // so reconcile the graph with it here. Applying unconditionally needs no per-command list:
+    // apply() moves demand by delta, so an unchanged model costs nothing and fires no transition.
+    // Without this the graph never learns about an edit, and nothing would actually start or stop.
+    graph_.apply(router_.bridge());
+    return reply;
+  } catch (const std::exception&) {
+    // The router itself never throws, but apply() can (thread creation, allocation). An exception
+    // escaping here would reach an ixwebsocket callback thread and call std::terminate, so refuse.
+    return R"({"error":"internal error","ok":false})";
+  }
 }
 
 }  // namespace ob

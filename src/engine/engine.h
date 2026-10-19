@@ -21,9 +21,14 @@ class Engine {
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
 
-  // Builds the graph from the model. Safe to call repeatedly.
+  // Builds the graph from the model. Safe to call repeatedly, but it REPLACES the router's model
+  // (discarding anything commands minted) and re-seeds the id counters — so it is a startup call:
+  // run it on the same thread as start()/stop(), never from a command, adaptor or deliver thread.
   void apply(const Bridge& bridge);
 
+  // Starts the graph and, when controlPort > 0, the control server. On an AUTHORISED open the
+  // server pushes a full `state` reply before any command, so a UI should treat its first message
+  // as its initial snapshot rather than the answer to something it sent.
   void start();
   void stop();
 

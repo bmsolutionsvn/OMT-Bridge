@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <string>
 
 #include <ixwebsocket/IXNetSystem.h>
@@ -26,7 +27,10 @@ int main(int argc, char** argv) {
   // Winsock must be initialised before ixwebsocket creates a socket, or listen() fails with
   // WSA 10093 (WSANOTINITIALISED). BreadCamera's engine_main does exactly this; ixwebsocket does
   // not initialise itself.
-  ix::initNetSystem();
+  if (!ix::initNetSystem()) {
+    std::fprintf(stderr, "Winsock initialisation failed\n");
+    return 1;
+  }
 
   int port = 0;
   std::string token, bridgeFile;
@@ -36,7 +40,10 @@ int main(int argc, char** argv) {
     else if (k == "--token") token = argv[i + 1];
     else if (k == "--bridge") bridgeFile = argv[i + 1];
   }
-  if (port == 0) {
+  // A port outside 1..65535 is a usage error, not "run without a control channel": atoi("-1") and
+  // atoi("70000") are non-zero, so a `== 0` check would let them through and the engine would
+  // bridge with no way to command or stop it.
+  if (port < 1 || port > 65535) {
     std::fprintf(stderr, "usage: omt-bridge-engine --port <n> [--token <s>] [--bridge <file>]\n");
     return 2;
   }
@@ -55,7 +62,14 @@ int main(int argc, char** argv) {
     }
   }
 
-  engine.start();
+  try {
+    engine.start();
+  } catch (const std::exception& e) {
+    // A bind/listen failure surfaces here (ControlServer::start throws). Report it: an uncaught
+    // exception would terminate with no message, which a supervisor sees as an unexplained loop.
+    std::fprintf(stderr, "engine start failed: %s\n", e.what());
+    return 1;
+  }
 
   // Report readiness on stdout; the UI reads this first line.
   std::printf("READY %s\n", token.c_str());

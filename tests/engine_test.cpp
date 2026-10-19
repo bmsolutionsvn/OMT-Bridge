@@ -29,12 +29,14 @@ TEST_CASE("outputs survive a control-channel disconnect (the UI-close guarantee)
   engine.apply(twoOutputsOneSource());
   engine.start();
 
-  const uint64_t before = engine.graph().hub("s1")->framesPublished();
   engine.onControlClientDisconnected(ob::ClientId{"c1"});
   std::this_thread::sleep_for(10ms);
-  const uint64_t after = engine.graph().hub("s1")->framesPublished();
 
-  CHECK(after == before);  // a disconnect never tears the graph down
+  // The graph is owned by the engine, not by the connection, so a disconnect must leave demand and
+  // rows exactly as they were. (framesPublished cannot move here — M1 has no adapter publishing —
+  // so assert the invariant that can actually fail if a disconnect tore the graph down.)
+  CHECK(engine.graph().hub("s1")->running());
+  CHECK(engine.graph().hub("s1")->refs() == 2);
   CHECK(engine.graph().rowCount() == 2u);
   engine.stop();
 }
