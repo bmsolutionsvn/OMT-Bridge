@@ -10,8 +10,9 @@ class TestSink : public ob::OmtSink {
  public:
   struct Sent { int w, h; bool alpha, premultiplied; int64_t ts; };
   std::vector<Sent> sent;
+  int opens = 0;
  protected:
-  void openLocked() override {}  // no network sender in a unit test
+  void openLocked() override { ++opens; }  // no network sender in a unit test
   void send(const ob::VideoFormat& f, const uint8_t*, bool alpha, bool premultiplied,
             int64_t ts) override {
     sent.push_back({f.width, f.height, alpha, premultiplied, ts});
@@ -66,4 +67,67 @@ TEST_CASE("an OMT-HX output of 1080p or less keeps H.264 alpha") {
   sink.deliver(frame);
   REQUIRE(sink.sent.size() == 1u);
   CHECK(sink.sent[0].alpha);
+}
+
+TEST_CASE("alpha: Off drops alpha and says so") {
+  TestSink sink;
+  sink.configure(output(ob::OutputTarget::OmtHx, ob::HxCodec::Hevc, ob::AlphaMode::Off), "B (A)");
+  auto frame = std::make_shared<ob::Frame>();
+  frame->format = ob::VideoFormat{4, 2, 60, 1, true};
+  frame->uyvy.assign(frame->lumaBytes() + frame->alphaBytes(), 0x80);
+  sink.deliver(frame);
+  REQUIRE(sink.sent.size() == 1u);
+  CHECK_FALSE(sink.sent[0].alpha);
+  CHECK(sink.note() == "alpha dropped");
+}
+
+TEST_CASE("the H.264 label clears once the frame fits") {
+  TestSink sink;
+  sink.configure(output(ob::OutputTarget::OmtHx, ob::HxCodec::H264, ob::AlphaMode::Auto), "B (A)");
+  auto big = std::make_shared<ob::Frame>();
+  big->format = ob::VideoFormat{1920, 2160, 60, 1, true};
+  big->uyvy.assign(big->lumaBytes() + big->alphaBytes(), 0x80);
+  sink.deliver(big);
+  REQUIRE(sink.note() == "alpha dropped — H.264 above 1080p, use HEVC");
+
+  auto small = std::make_shared<ob::Frame>();
+  small->format = ob::VideoFormat{1920, 1080, 60, 1, true};
+  small->uyvy.assign(small->lumaBytes() + small->alphaBytes(), 0x80);
+  sink.deliver(small);
+  REQUIRE(sink.sent.size() == 2u);
+  CHECK(sink.sent[1].alpha);
+  CHECK(sink.note().empty());
+}
+
+TEST_CASE("a Full OMT output ignores the H.264 resolution rule") {
+  TestSink sink;
+  sink.configure(output(ob::OutputTarget::Omt, ob::HxCodec::H264, ob::AlphaMode::Auto), "B (A)");
+  auto frame = std::make_shared<ob::Frame>();
+  frame->format = ob::VideoFormat{1920, 2160, 60, 1, true};
+  frame->uyvy.assign(frame->lumaBytes() + frame->alphaBytes(), 0x80);
+  sink.deliver(frame);
+  REQUIRE(sink.sent.size() == 1u);
+  CHECK(sink.sent[0].alpha);
+}
+
+TEST_CASE("premultiplied passes through untouched") {
+  TestSink sink;
+  sink.configure(output(ob::OutputTarget::OmtHx, ob::HxCodec::Hevc, ob::AlphaMode::Auto), "B (A)");
+  auto frame = std::make_shared<ob::Frame>();
+  frame->format = ob::VideoFormat{4, 2, 60, 1, true};
+  frame->premultiplied = true;
+  frame->uyvy.assign(frame->lumaBytes() + frame->alphaBytes(), 0x80);
+  sink.deliver(frame);
+  REQUIRE(sink.sent.size() == 1u);
+  CHECK(sink.sent[0].premultiplied);
+}
+
+TEST_CASE("a malformed frame is never sent") {
+  TestSink sink;
+  sink.configure(output(ob::OutputTarget::OmtHx, ob::HxCodec::Hevc, ob::AlphaMode::Auto), "B (A)");
+  auto frame = std::make_shared<ob::Frame>();
+  frame->format = ob::VideoFormat{4, 2, 60, 1, true};
+  frame->uyvy.assign(7, 0x80);  // too short to be valid
+  sink.deliver(frame);
+  CHECK(sink.sent.empty());
 }

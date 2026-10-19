@@ -401,6 +401,12 @@ error naming the coded size.
 If a target cannot carry alpha, the frame is sent opaque (colour over black, which a
 premultiplied frame already is) and the row shows *"alpha dropped"*.
 
+**Known limitation (M2).** Dropping alpha leaves the colour untouched. That is correct for a
+premultiplied frame (reducing it to colour over black), but a *straight* alpha frame — a Full OMT
+source that does not set `OMTVideoFlags_PreMultiplied`, and NDI in M3 — would look over-bright at
+soft edges. Compositing straight colour onto black belongs with `toStraight()` in M3; M2 does not
+claim it.
+
 ## 10. Audio
 
 - **Passthrough, no mixing.** Planar float, the source's channel count **and sample rate**.

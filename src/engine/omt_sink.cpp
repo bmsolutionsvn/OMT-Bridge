@@ -44,17 +44,29 @@ void OmtSink::openLocked() {
   }
   const auto mode = config_.target == OutputTarget::OmtHx ? omthx::Mode::Hx : omthx::Mode::Full;
   sender_ = std::make_unique<OmtSenderHolder>();
-  sender_->sender = std::make_unique<omthx::Sender>(name_, mode, qualityOf(config_.quality),
-                                                    codecOf(config_.codec));
+  try {
+    sender_->sender = std::make_unique<omthx::Sender>(name_, mode, qualityOf(config_.quality),
+                                                      codecOf(config_.codec));
+  } catch (...) {
+    sender_.reset();
+    note_ = "cannot open OMT output";
+    throw;
+  }
 }
 
 void OmtSink::deliver(const std::shared_ptr<const Frame>& frame) {
   if (!frame || !frame->valid()) return;  // never index a plane the frame does not have
   std::lock_guard l(mu_);
 
-  bool alpha = frame->format.alpha && config_.alpha != AlphaMode::Off;
-  if (alpha && config_.target == OutputTarget::OmtHx && config_.codec == HxCodec::H264 &&
-      frame->format.height > 1080) {
+  // The label describes THIS frame, so recompute it every time. The NDI/open note is not
+  // per-frame and is left alone.
+  if (config_.target != OutputTarget::Ndi) note_.clear();
+  const bool hadAlpha = frame->format.alpha;
+  bool alpha = hadAlpha && config_.alpha != AlphaMode::Off;
+  if (hadAlpha && config_.alpha == AlphaMode::Off) {
+    note_ = "alpha dropped";  // design 7.1: the operator chose to save bandwidth
+  } else if (alpha && config_.target == OutputTarget::OmtHx && config_.codec == HxCodec::H264 &&
+             frame->format.height > 1080) {
     alpha = false;
     note_ = "alpha dropped — H.264 above 1080p, use HEVC";
   }

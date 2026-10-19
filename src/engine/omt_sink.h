@@ -25,6 +25,8 @@ class OmtSink : public Sink {
   std::string note() const override;
 
  protected:
+  // Both virtuals are called with mu_ held. An override must not call any public method of
+  // OmtSink: configure(), deliver() and note() all take mu_, so it would self-deadlock.
   // Overridden by the test to observe the decision without opening a sender.
   virtual void send(const VideoFormat& format, const uint8_t* uyvy, bool alpha,
                     bool premultiplied, int64_t timestamp);
