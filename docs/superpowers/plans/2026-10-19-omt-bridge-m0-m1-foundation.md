@@ -2139,6 +2139,9 @@ git commit -m "feat(engine): OutputRow with drop-oldest isolation"
 ```cpp
 #include <doctest/doctest.h>
 
+#include <atomic>
+#include <memory>
+
 #include "engine/bridge_graph.h"
 
 TEST_CASE("one source feeding two outputs counts two refs on one hub (N x M)") {
@@ -2213,6 +2216,46 @@ TEST_CASE("publishing to a source that has no rows is a no-op") {
   graph.publish("gone", f);  // must not throw
   CHECK(true);
 }
+
+// Re-applying an unchanged model must not churn demand: a reset-to-zero-and-re-add would fire a
+// stop-then-start on every source adapter for any unrelated edit (Task 13 calls apply() per edit).
+TEST_CASE("re-applying an unchanged model fires no running transitions") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "B"});
+
+  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  graph.apply(b);
+
+  std::atomic<int> transitions{0};
+  graph.hub("s1")->setOnRunningChanged([&](bool) { transitions.fetch_add(1); });
+
+  graph.apply(b);  // the identical model
+
+  CHECK(transitions.load() == 0);
+  CHECK(graph.hub("s1")->refs() == 2);
+}
+
+// The subtle refcount case: one row leaves one source and joins another.
+TEST_CASE("an output that moves to another source moves its ref") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.sources.push_back(ob::Source{.id = "s2", .kind = ob::SourceKind::Omt, .address = "PC2"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+
+  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  graph.apply(b);
+  REQUIRE(graph.hub("s1")->refs() == 1);
+
+  b.outputs[0].sourceId = "s2";
+  graph.apply(b);
+
+  CHECK(graph.hub("s1")->refs() == 0);
+  CHECK_FALSE(graph.hub("s1")->running());
+  CHECK(graph.hub("s2")->refs() == 1);
+  CHECK(graph.hub("s2")->running());
+}
 ```
 
 - [ ] **Step 2: Write `src/engine/bridge_graph.h`**
@@ -2222,6 +2265,11 @@ TEST_CASE("publishing to a source that has no rows is a no-op") {
 // Reconciles a Bridge model into running hubs and rows (design 6.4, 6.5). apply() may be
 // called with a whole new model; it diffs against what it holds. No master tick: publish()
 // is called by each SourceHub's adapter, and fan-out comes from the ref counts.
+//
+// THREADING: apply(), start() and stop() are owned by ONE thread (the engine's control loop);
+// only publish() may be called from other threads (the source adapters). That is what lets the
+// first three hold raw row/hub pointers across a deliberate unlock, while publish() locks for its
+// read. Never call apply() from an adapter.
 #include <functional>
 #include <map>
 #include <memory>
@@ -2344,12 +2392,16 @@ void BridgeGraph::apply(const Bridge& bridge) {
   }
   retired.clear();  // joins each retired row's worker with mu_ released
 
-  // Phase 2, with mu_ released: bring each hub to exactly the demand the model implies.
+  // Phase 2, with mu_ released: move each hub to exactly the demand the model implies, by DELTA.
+  // Resetting to zero and re-adding would fire a stop-then-start transition on every apply(), so an
+  // unrelated edit (renaming an output) would bounce every running source adapter. Only the
+  // difference moves, so an unchanged model produces no transition at all.
   for (auto& [id, want] : wanted) {
     SourceHub* h = hub(id);  // the public accessor locks mu_ only for the lookup
     if (h == nullptr) continue;
-    while (h->refs() > 0) h->release();
-    for (int i = 0; i < want; ++i) h->addRef();
+    int cur = h->refs();
+    for (; cur > want; --cur) h->release();
+    for (; cur < want; ++cur) h->addRef();
   }
 }
 
@@ -2426,7 +2478,7 @@ Run:
 ```powershell
 cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: `[doctest] Status: SUCCESS!` — the five new cases pass alongside the existing thirty-four.
+Expected: `[doctest] Status: SUCCESS!` — the seven new cases pass alongside the existing thirty-four.
 
 - [ ] **Step 5: Commit**
 
