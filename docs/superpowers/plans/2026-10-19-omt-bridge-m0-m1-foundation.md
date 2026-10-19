@@ -2191,7 +2191,13 @@ class BridgeGraph {
   // Hands a frame to every row whose output reads this source.
   void publish(const std::string& sourceId, std::shared_ptr<const Frame> frame);
 
-  SourceHub* hub(const std::string& sourceId) const;  // locks; for callers outside the graph
+  // Locks; for callers outside the graph.
+  // READ-ONLY uses (latest(), running(), framesPublished()) are fine from any thread. Demand
+  // mutation is NOT: addRef/release/setThumbnailWanted have a single writer — the thread that
+  // calls apply() — so two transitions cannot interleave and the running callback's delivery
+  // order always matches the last state change. Toggle thumbnail demand by changing the model and
+  // calling apply(), not by reaching a hub from another thread.
+  SourceHub* hub(const std::string& sourceId) const;
   size_t hubCount() const;
   size_t rowCount() const;
   uint64_t offeredToRow(const std::string& outputId) const;
@@ -2229,41 +2235,55 @@ BridgeGraph::BridgeGraph(Deliver deliver) : deliver_(std::move(deliver)) {}
 BridgeGraph::~BridgeGraph() { stop(); }
 
 void BridgeGraph::apply(const Bridge& bridge) {
-  std::lock_guard l(mu_);
+  // Two phases. Under mu_ we only restructure (hubs and rows). Demand is deferred to phase 2,
+  // because SourceHub::addRef()/release() fire the running callback SYNCHRONOUSLY, and that
+  // callback starts or stops an input adapter — which may publish back into this graph. Firing it
+  // while mu_ is held would stall on, or self-deadlock with, a non-recursive mutex.
+  std::map<std::string, int> wanted;  // sourceId -> reference count the new model implies
+  {
+    std::lock_guard l(mu_);
 
-  for (const Source& s : bridge.sources) {
-    if (hubs_.find(s.id) == hubs_.end()) hubs_.emplace(s.id, std::make_unique<SourceHub>(s.id));
-  }
-  for (auto it = hubs_.begin(); it != hubs_.end();) {
-    if (bridge.findSource(it->first) == nullptr)
-      it = hubs_.erase(it);
-    else
-      ++it;
-  }
+    for (const Source& s : bridge.sources) {
+      if (hubs_.find(s.id) == hubs_.end()) hubs_.emplace(s.id, std::make_unique<SourceHub>(s.id));
+    }
+    for (auto it = hubs_.begin(); it != hubs_.end();) {
+      if (bridge.findSource(it->first) == nullptr)
+        it = hubs_.erase(it);
+      else
+        ++it;
+    }
 
-  // Remove rows whose output is gone, and drop every hub ref first, so a re-apply is exact.
-  for (auto& [id, hub] : hubs_) {
-    while (hub->refs() > 0) hub->release();
-  }
-  for (auto it = rows_.begin(); it != rows_.end();) {
-    if (bridge.findOutput(it->first) == nullptr) {
-      it->second.row->stop();
-      it = rows_.erase(it);
-    } else {
-      ++it;
+    // Remove rows whose output is gone. Every surviving hub starts from zero demand, so a
+    // re-apply is exact and a hub left with no outputs is released to idle.
+    for (auto it = rows_.begin(); it != rows_.end();) {
+      if (bridge.findOutput(it->first) == nullptr) {
+        it->second.row->stop();
+        it = rows_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    for (auto& [id, hub] : hubs_) wanted[id] = 0;
+
+    for (const Output& o : bridge.outputs) {
+      auto found = rows_.find(o.id);
+      if (found == rows_.end()) {
+        Row r;
+        r.row = std::make_unique<OutputRow>(o.id, o.sourceId, deliver_);
+        found = rows_.emplace(o.id, std::move(r)).first;
+      }
+      found->second.row->setSourceId(o.sourceId);
+      if (started_) found->second.row->start();
+      if (hubUnlocked(o.sourceId) != nullptr) ++wanted[o.sourceId];
     }
   }
 
-  for (const Output& o : bridge.outputs) {
-    auto found = rows_.find(o.id);
-    if (found == rows_.end()) {
-      Row r;
-      r.row = std::make_unique<OutputRow>(o.id, o.sourceId, deliver_);
-      found = rows_.emplace(o.id, std::move(r)).first;
-    }
-    found->second.row->setSourceId(o.sourceId);
-    if (started_) found->second.row->start();
-    if (SourceHub* h = hubUnlocked(o.sourceId)) h->addRef();
+  // Phase 2, with mu_ released: bring each hub to exactly the demand the model implies.
+  for (auto& [id, want] : wanted) {
+    SourceHub* h = hub(id);  // the public accessor locks mu_ only for the lookup
+    if (h == nullptr) continue;
+    while (h->refs() > 0) h->release();
+    for (int i = 0; i < want; ++i) h->addRef();
   }
 }
 
