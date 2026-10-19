@@ -1644,6 +1644,7 @@ TEST_CASE("the latest frame is the newest published one") {
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 
 #include "core/frame.h"
 
@@ -1781,6 +1782,13 @@ uint64_t SourceHub::framesPublished() const {
 
 - [ ] **Step 4: Add `ob_engine` to `CMakeLists.txt`**
 
+`ixwebsocket::ixwebsocket` is an IMPORTED target, so first add its `find_package` beside the others at the top of `CMakeLists.txt` (vcpkg installs the port; only `find_package` defines the target):
+```cmake
+find_package(ixwebsocket CONFIG REQUIRED)
+```
+
+Then create the engine library:
+
 ```cmake
 # ---- engine ----
 add_library(ob_engine STATIC
@@ -1788,10 +1796,18 @@ add_library(ob_engine STATIC
 )
 target_include_directories(ob_engine PUBLIC src)
 target_link_libraries(ob_engine PUBLIC ob_core ixwebsocket::ixwebsocket)
+# bcrypt is a Windows SDK library (bcrypt.lib, in the VS environment's default lib paths), not a
+# vcpkg port — exactly as BreadCamera's bc_engine links it. control_server uses it in Task 13.
 target_link_libraries(ob_engine PUBLIC bcrypt)
 ```
 
-Add `ixwebsocket::ixwebsocket` to `ob_tests`'s link libraries, and add `tests/source_hub_test.cpp`.
+Finally, wire the test: add `tests/source_hub_test.cpp` to `ob_tests` **and** link `ob_tests` to `ob_engine` — without that link the test's `ob::SourceHub` symbols are undefined:
+
+```cmake
+target_link_libraries(ob_tests PRIVATE ob_engine)
+```
+
+(`ixwebsocket` reaches `ob_tests` transitively through `ob_engine`'s `PUBLIC` usage requirement, so it needs no separate line.)
 
 - [ ] **Step 5: Run the tests**
 
