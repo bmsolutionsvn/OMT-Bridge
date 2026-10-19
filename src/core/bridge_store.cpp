@@ -56,9 +56,18 @@ void saveBridge(const Bridge& b, const std::filesystem::path& path) {
     throw std::runtime_error("bridge save failed: could not write " + tmp.string());
   }
   out.close();
+  if (!out) {
+    std::error_code ignored;
+    std::filesystem::remove(tmp, ignored);
+    throw std::runtime_error("bridge save failed: could not close " + tmp.string());
+  }
   std::error_code ec;
   std::filesystem::rename(tmp, path, ec);
-  if (ec) throw std::runtime_error("bridge save failed: " + ec.message());
+  if (ec) {
+    std::error_code ignored;
+    std::filesystem::remove(tmp, ignored);  // do not leave a stray .tmp behind
+    throw std::runtime_error("bridge save failed: " + ec.message());
+  }
 }
 
 std::optional<Bridge> loadBridge(const std::filesystem::path& path) {

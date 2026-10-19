@@ -63,3 +63,19 @@ TEST_CASE("a file with no settings block loads with the struct defaults") {
   REQUIRE(loaded.has_value());
   CHECK(loaded->settings == ob::BridgeSettings{});
 }
+
+TEST_CASE("saving twice over the same path replaces the file") {
+  const fs::path p = tempFile("twice.ombridge.json");
+  ob::Bridge first;
+  first.name = "First";
+  ob::saveBridge(first, p);
+
+  ob::Bridge second;
+  second.name = "Second";
+  ob::saveBridge(second, p);  // must replace, not fail or append
+
+  const auto loaded = ob::loadBridge(p);
+  REQUIRE(loaded.has_value());
+  CHECK(loaded->name == "Second");
+  CHECK_FALSE(fs::exists(p.string() + ".tmp"));  // no stray temp file
+}
