@@ -1587,6 +1587,8 @@ git commit -m "feat(core): Bridge JSON save and load"
 
 #include <atomic>
 #include <memory>
+#include <thread>
+#include <vector>
 
 #include "engine/source_hub.h"
 
@@ -1639,6 +1641,32 @@ TEST_CASE("the latest frame is the newest published one") {
   REQUIRE(hub.latest().get() != nullptr);
   CHECK(hub.latest()->format.width == 8);
 }
+
+// The class is the engine's synchronisation point, so its invariant gets a real interleaving:
+// every false->true transition is matched by a true->false one, so starts must equal stops and
+// the hub must end idle. This is the runnable check for the once-per-transition claim.
+TEST_CASE("hammering addRef and release from several threads keeps starts and stops balanced") {
+  ob::SourceHub hub("s1");
+  std::atomic<int> starts{0}, stops{0};
+  hub.setOnRunningChanged([&](bool on) { (on ? starts : stops).fetch_add(1); });
+
+  constexpr int kThreads = 4;
+  constexpr int kIters = 500;
+  std::vector<std::thread> threads;
+  for (int t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&] {
+      for (int i = 0; i < kIters; ++i) {
+        hub.addRef();
+        hub.release();
+      }
+    });
+  }
+  for (auto& th : threads) th.join();
+
+  CHECK(hub.refs() == 0);
+  CHECK_FALSE(hub.running());
+  CHECK(starts.load() == stops.load());
+}
 ```
 
 - [ ] **Step 2: Write `src/engine/source_hub.h`**
@@ -1677,6 +1705,8 @@ class SourceHub {
   bool running() const;
 
   // Called once per running transition. The engine starts or stops the input adapter here.
+  // Install this BEFORE the first demand change: the setter does not replay the current state,
+  // so a callback installed after the hub is already running waits for the next transition.
   void setOnRunningChanged(RunningChanged cb);
 
   // Overwrites the slot; never queues. A frame shared by N outputs is decoded once (design 6.5).
@@ -1715,15 +1745,19 @@ namespace ob {
 bool SourceHub::computeRunning() const { return refs_ > 0 || thumbnailWanted_; }
 
 void SourceHub::maybeTransition() {
+  RunningChanged cb;
   bool next = false;
   {
     std::lock_guard l(mu_);
     next = computeRunning();
     if (next == running_) return;
     running_ = next;
+    // Copy the callback under the lock: a concurrent setOnRunningChanged must not reassign the
+    // std::function while we are invoking it (that would be a data race, and can tear).
+    cb = onRunningChanged_;
   }
   // Outside the lock: the callback starts or stops an adapter, which may call back in.
-  if (onRunningChanged_) onRunningChanged_(next);
+  if (cb) cb(next);
 }
 
 void SourceHub::addRef() {
@@ -1771,9 +1805,15 @@ void SourceHub::setOnRunningChanged(RunningChanged cb) {
 }
 
 void SourceHub::publish(std::shared_ptr<const Frame> frame) {
-  std::lock_guard l(mu_);
-  latest_ = std::move(frame);
-  ++published_;
+  std::shared_ptr<const Frame> previous;
+  {
+    std::lock_guard l(mu_);
+    previous = std::move(latest_);
+    latest_ = std::move(frame);
+    ++published_;
+  }
+  // `previous` is released here, outside the lock: if this hub held the last reference, dropping
+  // it frees a full frame, and that must not happen while the mutex is held.
 }
 
 std::shared_ptr<const Frame> SourceHub::latest() const {
