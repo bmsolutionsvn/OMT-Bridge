@@ -514,6 +514,8 @@ git commit -m "build: optional NDI 6 SDK, off when not installed"
 ```cpp
 // OMT-Bridge-Engine.exe: headless. Task 15 replaces this body with the control server and graph.
 #include <cstdio>
+#include <cstdlib>
+#include <iostream>
 #include <string>
 
 int main(int argc, char** argv) {
@@ -2478,6 +2480,7 @@ std::string Engine::handleCommand(const ClientId& client, const std::string& tex
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <string>
 
 #include "core/bridge_store.h"
