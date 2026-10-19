@@ -3,10 +3,12 @@
 // called with a whole new model; it diffs against what it holds. No master tick: publish()
 // is called by each SourceHub's adapter, and fan-out comes from the ref counts.
 //
-// THREADING: apply(), start() and stop() are owned by ONE thread (the engine's control loop);
-// only publish() may be called from other threads (the source adapters). That is what lets the
-// first three hold raw row/hub pointers across a deliberate unlock, while publish() locks for its
-// read. Never call apply() from an adapter.
+// THREADING: apply(), start() and stop() must never run concurrently. apply() is serialised by its
+// owner — in production, Engine::controlMu_ around each command. start()/stop() are called on the
+// engine's main thread, which must not overlap a live command: Engine::stop() stops the control
+// server first, so its handlers have joined, before graph_.stop() runs. That serialisation is what
+// lets these three hold raw row/hub pointers across a deliberate unlock. Only publish() runs on
+// adapter threads; never call apply() from an adapter.
 #include <functional>
 #include <map>
 #include <memory>
