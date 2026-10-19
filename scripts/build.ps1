@@ -1,7 +1,7 @@
 param([ValidateSet('release', 'debug')][string]$Preset = 'release')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-git -C $root submodule update --init
+git -C $root submodule update --init --recursive
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 # The developer shell calls vswhere.exe by name, so its folder must be on PATH.
 $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"

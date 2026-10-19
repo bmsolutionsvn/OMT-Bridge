@@ -51,4 +51,5 @@ TEST_CASE("valid() accepts an alpha frame and rejects a degenerate height") {
 TEST_CASE("the linked omthx is the UYVY build") {
   // sendVideoUyvy and PixelFormat::Coded only exist at OMT-HX ae96aa1 or later (spec 6.3, 18.8).
   static_assert(static_cast<int>(omthx::PixelFormat::Coded) >= 0);
+  static_assert(sizeof(&omthx::Sender::sendVideoUyvy) > 0);
 }

@@ -20,7 +20,7 @@ function(ob_copy_runtime target)
 endfunction()
 
 # ---- tests ----
-# frame.h is header-only, so nothing links yet; ob_core is created in Task 6.
+# ob_core is created in Task 6; until then ob_tests links only doctest and omthx.
 add_executable(ob_tests
   tests/main.cpp
   tests/frame_test.cpp
