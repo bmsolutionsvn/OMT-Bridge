@@ -827,10 +827,13 @@ TEST_CASE("push never blocks and drops the oldest when full") {
 
 TEST_CASE("close unblocks a waiting pop and reopen resumes") {
   ob::BoundedQueue<int> q(2);
+  CHECK_FALSE(q.closed());
   q.close();
+  CHECK(q.closed());
   CHECK_FALSE(q.push(1));
   CHECK_FALSE(q.pop(0ms).has_value());
   q.reopen();
+  CHECK_FALSE(q.closed());
   CHECK_FALSE(q.push(1));
   CHECK(q.pop(0ms) == 1);
 }
@@ -847,13 +850,17 @@ TEST_CASE("close unblocks a waiting pop and reopen resumes") {
   }
 ```
 
+`closed()` is the **only thing this file gains over BreadCamera's copy** (BreadCamera's `bounded_queue.h` has no such accessor); `OutputRow`'s worker needs it to tell a pop timeout apart from a close. Because it is added code, Step 2's test asserts it (hence the `closed()` checks above). It is `const` and locks the `mutable` mutex, so it is race-free against `close()`/`reopen()`.
+
 - [ ] **Step 4: Add to `CMakeLists.txt` and run**
+
+`bounded_queue.h` is a header-only template, so `ob_core` gains **no** source here — the only change is adding `tests/bounded_queue_test.cpp` to the `ob_tests` sources.
 
 Run:
 ```powershell
-cmake --build --preset release; .\build\release\ob_tests.exe
+cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: SUCCESS.
+Expected: `[doctest] Status: SUCCESS!` — the two new cases pass alongside the existing seven.
 
 - [ ] **Step 5: Commit**
 
