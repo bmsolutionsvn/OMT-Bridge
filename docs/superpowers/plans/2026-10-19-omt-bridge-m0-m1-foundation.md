@@ -631,6 +631,22 @@ set(CMAKE_AUTOMOC ON)
 add_executable(omt-bridge WIN32 src/ui/main.cpp src/ui/main_window.cpp src/ui/main_window.h)
 target_include_directories(omt-bridge PRIVATE src)
 target_link_libraries(omt-bridge PRIVATE Qt6::Widgets)
+
+# Deploy Qt's platform plugin beside the executable. Without it Qt6Core falls back to the plugin
+# path baked into this vcpkg build, so the UI starts only on the build machine; copied anywhere
+# else it dies with "This application failed to start because no Qt platform plugin could be
+# initialized" (found in testing, after the merge). vcpkg's Qt does not export a plugin target, so
+# the file is located from Qt6_DIR: <prefix>/share/Qt6 -> <prefix>/Qt6/plugins/platforms.
+get_filename_component(_ob_qt_prefix "${Qt6_DIR}/../.." ABSOLUTE)
+set(_ob_qwindows "${_ob_qt_prefix}/Qt6/plugins/platforms/qwindows.dll")
+if(EXISTS "${_ob_qwindows}")
+  add_custom_command(TARGET omt-bridge POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:omt-bridge>/platforms"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ob_qwindows}"
+            "$<TARGET_FILE_DIR:omt-bridge>/platforms")
+else()
+  message(WARNING "qwindows.dll not found under ${_ob_qt_prefix}: the UI will only start where Qt is installed")
+endif()
 ```
 
 `target_include_directories(omt-bridge PRIVATE src)` is required: both `src/ui/main.cpp` and `main_window.cpp` `#include "ui/main_window.h"`, a project-root-relative path MSVC cannot resolve from `src/ui/` alone. It matches what `ob_tests` already does. It may become redundant once Task 6 links `ob_core` (whose `src` include is `PUBLIC`); leaving it is harmless.
