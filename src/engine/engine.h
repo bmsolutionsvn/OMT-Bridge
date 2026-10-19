@@ -28,7 +28,13 @@ class Engine {
   // Builds the graph from the model. Safe to call repeatedly, but it REPLACES the router's model
   // (discarding anything commands minted) and re-seeds the id counters — so it is a startup call:
   // run it on the same thread as start()/stop(), never from a command, adaptor or deliver thread.
+  // Holds controlMu_ for its whole body, so it cannot interleave a command's apply.
   void apply(const Bridge& bridge);
+
+  // A source's runtime view, or nullopt when no such source is configured. Reads the runtime map
+  // and the hub, never the control mutex — safe from a reply thread.
+  std::optional<SourceRuntime> sourceRuntime(const std::string& id) const;
+  std::optional<OutputRuntime> outputRuntime(const std::string& id) const;
 
   // Starts the graph and, when controlPort > 0, the control server. On an AUTHORISED open the
   // server pushes a full `state` reply before any command, so a UI should treat its first message
@@ -49,11 +55,10 @@ class Engine {
   // The graph's running hook, called synchronously during apply() — i.e. with controlMu_ held when
   // apply() came from a command. It only installs the adapter transition callback.
   void onHubCreated(SourceHub& hub, const Source& source);
+  // Reconciles router, adapters, runtime map and graph. controlMu_ held.
+  void applyLocked(const Bridge& bridge);
   void startAdapter(const std::string& sourceId);  // controlMu_ held
   void stopAdapter(const std::string& sourceId);   // controlMu_ held
-
-  std::optional<SourceRuntime> sourceRuntime(const std::string& id) const;
-  std::optional<OutputRuntime> outputRuntime(const std::string& id) const;
 
   int controlPort_;
   std::string token_;

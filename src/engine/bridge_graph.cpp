@@ -181,6 +181,7 @@ std::optional<BridgeGraph::RowStats> BridgeGraph::rowStats(const std::string& ou
   s.delivered = it->second.row->delivered();
   s.dropped = it->second.row->dropped();
   s.faulted = it->second.row->faulted();
+  s.live = it->second.row->live();
   s.note = it->second.row->note();
   return s;
 }

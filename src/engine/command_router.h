@@ -15,15 +15,9 @@ namespace ob {
 
 // The runtime half of a source row, as far as a state reply needs it. Kept here rather than in
 // core/bridge_model.h so the router's reply shape does not force the model to carry liveness.
-struct FormatView {
-  int width = 0, height = 0, fpsN = 0, fpsD = 0;
-  bool alpha = false;
-  bool known = false;
-};
-
 struct SourceRuntime {
   SignalState state = SignalState::Ready;
-  FormatView format;
+  VideoFormatView format;
 };
 
 struct OutputRuntime {

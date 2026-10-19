@@ -60,6 +60,9 @@ class OutputRow {
 
   uint64_t delivered() const { return delivered_.load(); }  // atomic: incremented on the worker thread
   uint64_t dropped() const { return queue_.dropped(); }
+  // True while the running worker has delivered at least one frame in this run. Per-run, not
+  // cumulative: start()/stop() and a fault reset it, so a stopped or failed row is not "live".
+  bool live() const { return live_.load(); }
   // True once the sink threw. The worker then stops delivering (it does not spin retrying); the
   // engine reads this to mark this output Offline, so one failed sink affects only its own row.
   bool faulted() const { return faulted_.load(); }
@@ -75,6 +78,7 @@ class OutputRow {
   // Read by the test (and later the state snapshot) on a different thread from run(), which
   // does the increment: it must be atomic, not a plain uint64_t.
   std::atomic<uint64_t> delivered_ = 0;
+  std::atomic<bool> live_ = false;
   std::atomic<bool> faulted_ = false;
 };
 

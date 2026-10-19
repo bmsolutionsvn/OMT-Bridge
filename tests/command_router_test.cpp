@@ -87,7 +87,7 @@ TEST_CASE("state reports runtime liveness when the engine supplies it") {
       [](const std::string& id) -> std::optional<ob::SourceRuntime> {
         ob::SourceRuntime rt;
         rt.state = ob::SignalState::Live;
-        rt.format = ob::FormatView{1920, 1080, 60, 1, false, true};
+        rt.format = ob::VideoFormatView{1920, 1080, 60, 1, false, true};
         return id == "s1" ? std::optional<ob::SourceRuntime>(rt) : std::nullopt;
       },
       [](const std::string&) { return std::nullopt; });

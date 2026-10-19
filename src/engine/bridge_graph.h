@@ -65,6 +65,7 @@ class BridgeGraph {
   struct RowStats {
     uint64_t offered = 0, delivered = 0, dropped = 0;
     bool faulted = false;
+    bool live = false;
     std::string note;
   };
   std::optional<RowStats> rowStats(const std::string& outputId) const;

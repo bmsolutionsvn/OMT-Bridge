@@ -2,6 +2,7 @@
 
 #include <exception>
 #include <utility>
+#include <vector>
 
 #include "core/bridge_store.h"
 
@@ -25,9 +26,43 @@ Engine::Engine(int controlPort, std::string token, std::string bridgeFile)
 Engine::~Engine() { stop(); }
 
 void Engine::apply(const Bridge& bridge) {
+  std::lock_guard l(controlMu_);
+  applyLocked(bridge);
+}
+
+void Engine::applyLocked(const Bridge& bridge) {
+  // An edited source must regain its adapter: demand never drops for an id that stays demanded, so
+  // apply() alone would keep the old receiver (old address/kind) running forever.
+  std::vector<std::string> changed;
+  for (const Source& s : bridge.sources) {
+    const Source* old = model_.findSource(s.id);
+    if (old == nullptr || !(*old == s)) changed.push_back(s.id);
+  }
+  for (const auto& id : changed) stopAdapter(id);  // an edited source must restart
+
   router_.setBridge(bridge);
-  model_ = bridge;  // before apply(): the running hook reads it
+  model_ = bridge;
+
+  {
+    std::lock_guard l(runtimeMu_);
+    // Every configured source starts Ready: it is known, but no adapter has measured anything.
+    for (const Source& s : bridge.sources)
+      if (sourceRuntime_.find(s.id) == sourceRuntime_.end())
+        sourceRuntime_[s.id].state = SignalState::Ready;
+    for (auto it = sourceRuntime_.begin(); it != sourceRuntime_.end();) {
+      if (model_.findSource(it->first) == nullptr)
+        it = sourceRuntime_.erase(it);
+      else
+        ++it;
+    }
+  }
+
   graph_.apply(model_);
+
+  for (const auto& id : changed) {
+    SourceHub* h = graph_.hub(id);
+    if (h != nullptr && h->running()) startAdapter(id);  // restart under the same demand
+  }
 }
 
 void Engine::onHubCreated(SourceHub& hub, const Source& source) {
@@ -65,7 +100,16 @@ void Engine::startAdapter(const std::string& id) {
   adapters_[id]->start();
 }
 
-void Engine::stopAdapter(const std::string& id) { adapters_.erase(id); }
+void Engine::stopAdapter(const std::string& id) {
+  adapters_.erase(id);  // joins the loops; their state callbacks have finished
+  // Retire this run's liveness only after the join, so no late callback can overwrite it.
+  std::lock_guard l(runtimeMu_);
+  const auto it = sourceRuntime_.find(id);
+  if (it != sourceRuntime_.end()) {
+    it->second.state = SignalState::Ready;
+    it->second.format = {};
+  }
+}
 
 std::optional<SourceRuntime> Engine::sourceRuntime(const std::string& id) const {
   SourceRuntime rt;
@@ -78,10 +122,11 @@ std::optional<SourceRuntime> Engine::sourceRuntime(const std::string& id) const 
   // Released runtimeMu_ before the graph lock: an adapter's state callback takes runtimeMu_ and
   // may run while a hub transition is in flight, so hold the two locks one at a time only.
   SourceHub* hub = graph_.hub(id);
-  if (hub != nullptr) {
+  if (hub != nullptr && hub->running()) {
     if (const auto latest = hub->latest()) {
-      rt.format = FormatView{latest->format.width, latest->format.height, latest->format.fpsN,
-                             latest->format.fpsD, latest->format.alpha, true};
+      rt.format = VideoFormatView{latest->format.width, latest->format.height,
+                                  latest->format.fpsN, latest->format.fpsD,
+                                  latest->format.alpha, true};
     }
   }
   return rt;
@@ -92,7 +137,7 @@ std::optional<OutputRuntime> Engine::outputRuntime(const std::string& id) const 
   if (!stats) return std::nullopt;
   OutputRuntime rt;
   rt.state = stats->faulted ? SignalState::Offline
-                            : (stats->delivered > 0 ? SignalState::Live : SignalState::Ready);
+                            : (stats->live ? SignalState::Live : SignalState::Ready);
   rt.note = stats->note;
   rt.delivered = stats->delivered;
   rt.dropped = stats->dropped;
@@ -141,10 +186,9 @@ std::string Engine::handleCommand(const ClientId& client, const std::string& tex
     const std::string reply = router_.handle(client, text);
     // Every command may have edited the router's model (add-source, remove-source, add-output, …),
     // so reconcile the graph with it here. Applying unconditionally needs no per-command list:
-    // apply() moves demand by delta, so an unchanged model costs nothing and fires no transition.
+    // applyLocked() costs nothing when nothing changed and fires no transition.
     // Without this the graph never learns about an edit, and nothing would actually start or stop.
-    model_ = router_.bridge();
-    graph_.apply(model_);
+    applyLocked(router_.bridge());
     return reply;
   } catch (const std::exception&) {
     // The router itself never throws, but apply() can (thread creation, allocation). An exception

@@ -10,7 +10,9 @@ using namespace std::chrono_literals;
 static ob::Bridge twoOutputsOneSource() {
   ob::Bridge b;
   b.name = "Test";
-  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  // NDI: no adapter and no socket, so these tests never open a network receiver. The NDI branch
+  // still records Offline on demand, which is what the lifecycle assertions below need.
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "PC"});
   b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
   b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::OmtHx, .name = "B"});
   return b;
@@ -43,5 +45,45 @@ TEST_CASE("outputs survive a control-channel disconnect (the UI-close guarantee)
   CHECK(engine.graph().hub("s1")->running());
   CHECK(engine.graph().hub("s1")->refs() == 2);
   CHECK(engine.graph().rowCount() == 2u);
+  engine.stop();
+}
+
+TEST_CASE("runtime state is Ready when configured, and after the last output leaves") {
+  ob::Engine engine(0, "token");
+  auto b = twoOutputsOneSource();  // NDI: deterministic, no socket
+  engine.apply(b);
+  auto rt = engine.sourceRuntime("s1");
+  REQUIRE(rt.has_value());
+  CHECK(static_cast<int>(rt->state) == static_cast<int>(ob::SignalState::Ready));
+
+  engine.start();  // demand arrives: the NDI branch marks it Offline
+  rt = engine.sourceRuntime("s1");
+  REQUIRE(rt.has_value());
+  CHECK(static_cast<int>(rt->state) == static_cast<int>(ob::SignalState::Offline));
+
+  b.outputs.clear();
+  engine.apply(b);  // demand drops
+  rt = engine.sourceRuntime("s1");
+  REQUIRE(rt.has_value());
+  CHECK(static_cast<int>(rt->state) == static_cast<int>(ob::SignalState::Ready));
+
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "A"});
+  engine.apply(b);  // demand returns
+  rt = engine.sourceRuntime("s1");
+  REQUIRE(rt.has_value());
+  CHECK(static_cast<int>(rt->state) == static_cast<int>(ob::SignalState::Offline));
+  engine.stop();
+}
+
+TEST_CASE("editing a source's address restarts its adapter") {
+  ob::Engine engine(0, "token");
+  auto b = twoOutputsOneSource();
+  b.sources[0].kind = ob::SourceKind::Omt;
+  b.sources[0].address = "PC";
+  engine.apply(b);
+  engine.start();
+  b.sources[0].address = "PC2";
+  engine.apply(b);  // no exception, adapter restarted
+  CHECK(engine.graph().hub("s1")->refs() == 2);
   engine.stop();
 }
