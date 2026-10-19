@@ -21,12 +21,22 @@ std::string_view toString(OutputTarget t);
 std::string_view toString(HxCodec c);
 std::string_view toString(Quality q);
 std::string_view toString(AlphaMode a);
-// Wire names. kind/target/codec take their proper spelling ("OMT", "OMT-HX", "NDI", "HEVC",
-// "H.264"); quality and alpha follow design 5.2/5.3's field listing ("Low"/"Medium"/"High",
-// "Auto"/"Off"). These differ in case from `state` ("live"), which is lowercase only because it
-// is lifted verbatim from BreadCamera's shipped wire contract (Task 6) and must stay diffable.
-// Task 8's test pins every one of these so the JSON store (Task 9) and the command router
-// (Task 13) cannot drift from them.
+
+// The wire names, and their one home. kind/target/codec take their proper spelling ("OMT",
+// "OMT-HX", "NDI", "HEVC", "H.264"); quality and alpha follow design 5.2/5.3's field listing
+// ("Low"/"Medium"/"High", "Auto"/"Off"). These differ in case from `state` ("live"), which is
+// lowercase only because it is lifted verbatim from BreadCamera's shipped wire contract
+// (Task 6) and must stay diffable.
+//
+// The parsers below compare against toString(...) rather than re-listing the literals, so each
+// name exists exactly once. The JSON store (Task 9) and the command router (Task 13) MUST use
+// these — never their own name tables, which is how the protocol would otherwise end up writing
+// "OMT" in a state reply while rejecting it in an add-source.
+std::optional<SourceKind> sourceKindFromString(std::string_view s);
+std::optional<OutputTarget> outputTargetFromString(std::string_view s);
+std::optional<HxCodec> hxCodecFromString(std::string_view s);
+std::optional<Quality> qualityFromString(std::string_view s);
+std::optional<AlphaMode> alphaModeFromString(std::string_view s);
 
 // What a source is sending, once known. Kept separate from core/frame.h's VideoFormat so
 // core/ stays free of the omthx headers; the adapters copy one into the other.
@@ -44,10 +54,17 @@ struct Source {
   std::string id;
   SourceKind kind = SourceKind::Omt;
   std::string address;  // OMT: "HOSTNAME (name)"  ·  NDI: the NDI source name
-  SignalState state = SignalState::Ready;
-  VideoFormatView format;  // width/height/fps/alpha once known; all zero until then
+  SignalState state = SignalState::Ready;  // runtime liveness: NOT persisted (Task 9)
+  VideoFormatView format;                  // runtime: NOT persisted
   std::optional<HxCodec> codec;  // OMT-HX only
-  bool operator==(const Source&) const = default;
+
+  // Equality is CONFIGURATION equality: `state` and `format` are live values, not saved config,
+  // so a source that goes Live still equals its on-disk form. The JSON store round-trip (Task 9)
+  // compares exactly this, and no future diff-based apply() may read a liveness change as an
+  // edit and restart an adapter.
+  bool operator==(const Source& o) const {
+    return id == o.id && kind == o.kind && address == o.address && codec == o.codec;
+  }
 };
 
 struct Output {
@@ -58,8 +75,13 @@ struct Output {
   Quality quality = Quality::Medium;
   AlphaMode alpha = AlphaMode::Auto;
   std::string name;
-  SignalState state = SignalState::Ready;
-  bool operator==(const Output&) const = default;
+  SignalState state = SignalState::Ready;  // runtime liveness: NOT persisted
+
+  // Configuration equality (see Source): `state` is live liveness, not saved config.
+  bool operator==(const Output& o) const {
+    return id == o.id && sourceId == o.sourceId && target == o.target && codec == o.codec &&
+           quality == o.quality && alpha == o.alpha && name == o.name;
+  }
 };
 
 struct BridgeSettings {

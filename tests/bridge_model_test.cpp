@@ -62,3 +62,50 @@ TEST_CASE("the enums serialise to their wire names") {
   CHECK(std::string(ob::toString(ob::AlphaMode::Auto)) == "Auto");
   CHECK(std::string(ob::toString(ob::AlphaMode::Off)) == "Off");
 }
+
+// The writers and readers must agree, or the control protocol is asymmetric (a state reply
+// writes "OMT" while add-source rejects it). This is the test that keeps them one table.
+//
+// The comparisons cast to int deliberately. `CHECK(*back == k)` with two enum operands makes
+// doctest stringify each via unqualified `toString`; ADL then picks ob::toString(SourceKind),
+// which returns std::string_view, and `string_view + const char*` does not compile — the same
+// trap Task 6 hit. Casting to int sidesteps the stringification entirely.
+TEST_CASE("every wire name parses back to its enum") {
+  for (auto k : {ob::SourceKind::Omt, ob::SourceKind::OmtHx, ob::SourceKind::Ndi}) {
+    const auto back = ob::sourceKindFromString(ob::toString(k));
+    REQUIRE(back.has_value());
+    CHECK(static_cast<int>(*back) == static_cast<int>(k));
+  }
+  for (auto t : {ob::OutputTarget::Omt, ob::OutputTarget::OmtHx, ob::OutputTarget::Ndi}) {
+    const auto back = ob::outputTargetFromString(ob::toString(t));
+    REQUIRE(back.has_value());
+    CHECK(static_cast<int>(*back) == static_cast<int>(t));
+  }
+  for (auto c : {ob::HxCodec::Hevc, ob::HxCodec::H264}) {
+    const auto back = ob::hxCodecFromString(ob::toString(c));
+    REQUIRE(back.has_value());
+    CHECK(static_cast<int>(*back) == static_cast<int>(c));
+  }
+  for (auto q : {ob::Quality::Low, ob::Quality::Medium, ob::Quality::High}) {
+    const auto back = ob::qualityFromString(ob::toString(q));
+    REQUIRE(back.has_value());
+    CHECK(static_cast<int>(*back) == static_cast<int>(q));
+  }
+  for (auto a : {ob::AlphaMode::Auto, ob::AlphaMode::Off}) {
+    const auto back = ob::alphaModeFromString(ob::toString(a));
+    REQUIRE(back.has_value());
+    CHECK(static_cast<int>(*back) == static_cast<int>(a));
+  }
+  CHECK_FALSE(ob::sourceKindFromString("Telepathy").has_value());
+  CHECK_FALSE(ob::hxCodecFromString("omt").has_value());  // the wire name is case-sensitive
+}
+
+TEST_CASE("equality ignores liveness, so a Live source still equals its saved form") {
+  ob::Source a{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "CAM"};
+  ob::Source b = a;
+  b.state = ob::SignalState::Live;
+  b.format = ob::VideoFormatView{1920, 1080, 60, 1, false, true};
+  CHECK(a == b);
+  b.address = "OTHER";
+  CHECK_FALSE(a == b);
+}
