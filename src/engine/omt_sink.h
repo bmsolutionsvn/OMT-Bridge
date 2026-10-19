@@ -37,7 +37,8 @@ class OmtSink : public Sink {
   mutable std::mutex mu_;
   Output config_;
   std::string name_;
-  std::string note_;
+  std::string openNote_;   // NDI / open failure: outlives per-frame labels
+  std::string frameNote_;  // this frame's decision
   std::unique_ptr<OmtSenderHolder> sender_;
 };
 

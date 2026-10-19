@@ -404,8 +404,8 @@ premultiplied frame already is) and the row shows *"alpha dropped"*.
 **Known limitation (M2).** Dropping alpha leaves the colour untouched. That is correct for a
 premultiplied frame (reducing it to colour over black), but a *straight* alpha frame — a Full OMT
 source that does not set `OMTVideoFlags_PreMultiplied`, and NDI in M3 — would look over-bright at
-soft edges. Compositing straight colour onto black belongs with `toStraight()` in M3; M2 does not
-claim it.
+soft edges. Compositing straight colour onto black belongs with the alpha-conversion work in M3, as a premultiply-over-black sibling of
+`toStraight()` (which performs the opposite, premultiplied → straight, conversion).
 
 ## 10. Audio
 

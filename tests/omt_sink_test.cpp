@@ -120,6 +120,14 @@ TEST_CASE("premultiplied passes through untouched") {
   sink.deliver(frame);
   REQUIRE(sink.sent.size() == 1u);
   CHECK(sink.sent[0].premultiplied);
+
+  auto straight = std::make_shared<ob::Frame>();
+  straight->format = ob::VideoFormat{4, 2, 60, 1, true};
+  straight->premultiplied = false;
+  straight->uyvy.assign(straight->lumaBytes() + straight->alphaBytes(), 0x80);
+  sink.deliver(straight);
+  REQUIRE(sink.sent.size() == 2u);
+  CHECK_FALSE(sink.sent[1].premultiplied);
 }
 
 TEST_CASE("a malformed frame is never sent") {
@@ -130,4 +138,14 @@ TEST_CASE("a malformed frame is never sent") {
   frame->uyvy.assign(7, 0x80);  // too short to be valid
   sink.deliver(frame);
   CHECK(sink.sent.empty());
+}
+
+TEST_CASE("an NDI output keeps its M3 note even with alpha: Off") {
+  ob::OmtSink sink;  // configure returns before constructing a sender for NDI
+  sink.configure(output(ob::OutputTarget::Ndi, ob::HxCodec::Hevc, ob::AlphaMode::Off), "B (A)");
+  auto frame = std::make_shared<ob::Frame>();
+  frame->format = ob::VideoFormat{4, 2, 60, 1, true};
+  frame->uyvy.assign(frame->lumaBytes() + frame->alphaBytes(), 0x80);
+  sink.deliver(frame);
+  CHECK(sink.note() == "NDI output needs the NDI adapter (M3)");
 }

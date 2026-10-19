@@ -24,6 +24,8 @@ namespace ob {
 // while the graph mutex is held, so a callback would invert the lock order.
 //
 // Construction and configure() run under the graph mutex: keep them cheap and do not block.
+// A factory or configure() may reopen a real adapter and may therefore block (an OMT sender
+// teardown/setup); while it does, commands wait. It must still never call back into the graph.
 class Sink {
  public:
   virtual ~Sink() = default;
