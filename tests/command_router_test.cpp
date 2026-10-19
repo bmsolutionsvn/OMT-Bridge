@@ -48,3 +48,45 @@ TEST_CASE("state reports the model") {
   // The symmetry that matters: what the reply writes is exactly what add-source accepts.
   CHECK(reply.find("\"kind\":\"NDI\"") != std::string::npos);
 }
+
+// A wrong-typed field must be refused, not throw: an exception here would escape a control-server
+// thread and call std::terminate.
+TEST_CASE("a wrong-typed field is refused rather than thrown on") {
+  ob::CommandRouter router;
+  const auto a = router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-output","sourceId":42})");
+  CHECK(a.find("\"ok\":false") != std::string::npos);
+  const auto b = router.handle(ob::ClientId{"c1"},
+                               R"({"cmd":"set-output-source","id":"o1","sourceId":42})");
+  CHECK(b.find("\"ok\":false") != std::string::npos);
+  const auto c = router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-output","name":true})");
+  CHECK(c.find("\"ok\":false") != std::string::npos);
+}
+
+TEST_CASE("add-output and set-output-source edit the model, and remove-source detaches dependents") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"OMT","address":"PC"})");
+  const auto made = router.handle(ob::ClientId{"c1"},
+                                  R"({"cmd":"add-output","sourceId":"s1","name":"A"})");
+  CHECK(made.find("\"ok\":true") != std::string::npos);
+
+  const auto moved = router.handle(ob::ClientId{"c1"},
+                                   R"({"cmd":"set-output-source","id":"o1","sourceId":""})");
+  CHECK(moved.find("\"ok\":true") != std::string::npos);
+
+  const auto removed = router.handle(ob::ClientId{"c1"}, R"({"cmd":"remove-source","id":"s1"})");
+  CHECK(removed.find("\"ok\":true") != std::string::npos);
+  CHECK(router.bridge().sources.empty());
+  CHECK(router.bridge().outputs.size() == 1u);         // the row is kept...
+  CHECK(router.bridge().outputs[0].sourceId.empty());  // ...with its source detached
+}
+
+TEST_CASE("setBridge seeds the id counter past a loaded model") {
+  ob::CommandRouter router;
+  ob::Bridge loaded;
+  loaded.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  router.setBridge(loaded);
+
+  const auto reply = router.handle(ob::ClientId{"c1"},
+                                   R"({"cmd":"add-source","kind":"NDI","address":"CAM"})");
+  CHECK(reply.find("\"id\":\"s2\"") != std::string::npos);  // not a duplicate "s1"
+}
