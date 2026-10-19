@@ -57,6 +57,21 @@ TEST_CASE("the latest frame is the newest published one") {
   CHECK(hub.latest()->format.width == 8);
 }
 
+TEST_CASE("a transparent alpha plane is kept and the stored frame stays valid") {
+  ob::SourceHub hub("s1");
+  auto f = std::make_shared<ob::Frame>();
+  f->format = ob::VideoFormat{4, 2, 60, 1, true};
+  f->uyvy.assign(f->lumaBytes() + f->alphaBytes(), 0x10);
+  f->premultiplied = true;
+  f->uyvy[f->alphaOffset() + 1] = 128;  // one transparent pixel keeps alpha on
+  hub.storeFrame(f);
+
+  REQUIRE(hub.latest().get() != nullptr);
+  CHECK(hub.latest()->format.alpha);
+  CHECK(hub.latest()->premultiplied);
+  CHECK(hub.latest()->valid());
+}
+
 // The class is the engine's synchronisation point, so its invariant gets a real interleaving:
 // every false->true transition is matched by a true->false one, so starts must equal stops and
 // the hub must end idle. This is the runnable check for the once-per-transition claim.

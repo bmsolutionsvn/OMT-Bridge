@@ -72,7 +72,7 @@ void SourceHub::storeFrame(std::shared_ptr<Frame> frame) {
     // One scan per source frame, shared by every output (design 6.4).
     const size_t offset = frame->alphaOffset();
     const size_t bytes = frame->alphaBytes();
-    const uint8_t* plane = offset == Frame::kNoAlpha ? nullptr : frame->uyvy.data() + offset;
+    const uint8_t* plane = frame->uyvy.data() + offset;
     if (alpha_.shouldDrop(true, plane, bytes, std::chrono::steady_clock::now())) {
       // Drop the plane without copying: shrinking a vector does not move the picture, and
       // Frame::valid() requires uyvy.size() == lumaBytes() + alphaBytes() for the new format.
@@ -84,7 +84,7 @@ void SourceHub::storeFrame(std::shared_ptr<Frame> frame) {
     alpha_.reset();
   }
 
-  // The slot is immutable once stored: consumers only ever see shared_ptr<const Frame>.
+  // Consumers only ever see shared_ptr<const Frame>; the hub mutated the object above, before storing it.
   std::shared_ptr<const Frame> published = std::move(frame);
   std::shared_ptr<const Frame> previous;
   {

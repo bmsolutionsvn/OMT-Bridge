@@ -41,6 +41,14 @@ class SourceHub {
   // This does NOT fan out — carrying media to rows is BridgeGraph::publish(sourceId, frame). An
   // adapter must call the graph, never this, or outputs receive nothing while framesPublished()
   // climbs.
+  // Precondition: the frame must satisfy Frame::valid() (uyvy.size() == lumaBytes() +
+  // alphaBytes()). The decode boundary validates; this is the first code that reads alpha from
+  // dimensions that ultimately come from the wire.
+  // Ownership: the caller transfers the frame for this publish and must not reuse or mutate it
+  // afterwards. storeFrame mutates the object in place (clears alpha, shrinks the plane), so reuse
+  // would persist a cleared alpha and race the hub/rows.
+  // alpha_ is written only by BridgeGraph::publish, which serialises stores under the graph
+  // mutex; a direct two-thread caller would race the gate.
   void storeFrame(std::shared_ptr<Frame> frame);
   std::shared_ptr<const Frame> latest() const;
 
