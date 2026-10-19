@@ -1,0 +1,2543 @@
+# OMT Bridge M0+M1 (Foundation and Engine Core) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Stand up the `OMT-Bridge` repository and its headless engine core — two processes, a token-authenticated loopback control channel, N sources × M outputs wired through reference-counted source hubs and drop-oldest output rows, with a CI build — so that M2 onwards can add real OMT/OMT-HX/NDI I/O to a working engine.
+
+**Architecture:** `OMT-Bridge-Engine.exe` is headless and owns the bridge graph; `OMT-Bridge.exe` is a Qt Widgets UI that supervises it and talks to it over a loopback WebSocket carrying a random token. The engine has one `SourceHub` per Source and one `OutputRow` per Output; an OutputRow holds a drop-oldest queue and a worker thread. There is no master tick — pacing belongs to each source. The canonical frame is 8-bit 4:2:2 `UYVY`/`UYVA`.
+
+**Tech Stack:** C++20, CMake 3.28+, Ninja, vcpkg (`qtbase`, `ffmpeg`, `ixwebsocket`, `nlohmann-json`, `doctest`), OMT-HX as a git submodule, NDI 6 SDK (optional, off in CI), doctest.
+
+**Spec:** `docs/superpowers/specs/2026-10-19-omt-bridge-design.md`. Workspace-relative sibling checkouts: `OMT-HX`, `BreadCamera` (the source of lifted modules).
+
+> **Prerequisite for every task:** run commands from a **Visual Studio developer shell** (`Launch-VsDevShell.ps1 -Arch amd64`) with `VCPKG_ROOT` set. All paths below are relative to the `OMT-Bridge` repository root unless they start with a sibling repo name.
+
+---
+
+## File structure
+
+| Path | Responsibility |
+|---|---|
+| `CMakeLists.txt` | Project, optional SDK discovery, targets: `ob_core`, `ob_engine`, `ob_shell`, `ob_ui`, `omt-bridge-engine`, `omt-bridge`, `ob_tests` |
+| `CMakePresets.json` | `release` / `debug` presets, Ninja + vcpkg toolchain |
+| `vcpkg.json` | Manifest dependencies |
+| `cmake/FindNDI.cmake` | Finds the installed NDI 6 SDK (lifted from BreadCamera) |
+| `src/core/frame.h` | The canonical `Frame` and `VideoFormat` |
+| `src/core/signal_state.h/.cpp` | Four signal states + `ErrorInfo` (lifted) |
+| `src/core/bounded_queue.h` | Drop-oldest queue (lifted) |
+| `src/core/bridge_model.h/.cpp` | `Bridge`, `Source`, `Output` data model |
+| `src/core/bridge_store.h/.cpp` | Bridge JSON save/load |
+| `src/engine/source_hub.h/.cpp` | One source: latest frame + reference counting |
+| `src/engine/output_row.h/.cpp` | One output: queue + worker + drop accounting |
+| `src/engine/bridge_graph.h/.cpp` | Reconciles the model into hubs and rows |
+| `src/engine/control_server.h/.cpp` | Loopback WebSocket control API (lifted) |
+| `src/engine/command_router.h/.cpp` | JSON command validation + dispatch |
+| `src/engine/engine.h/.cpp` | Composes graph, store, control server |
+| `src/engine/engine_main.cpp` | `omt-bridge-engine.exe` entry point |
+| `src/shell/supervisor.h/.cpp` | Engine restart policy (lifted) |
+| `src/shell/process_launcher.h/.cpp` | Launches the engine (lifted) |
+| `src/ui/main.cpp`, `src/ui/main_window.h/.cpp` | Qt Widgets window |
+| `tests/main.cpp` | doctest main |
+| `tests/*_test.cpp` | Unit tests, co-located by subject |
+| `.github/workflows/build.yml` | CI: configure, build, test |
+
+**Namespace:** everything is in `namespace ob` (OMT Bridge). Lifted files change only their namespace from `bc` to `ob`.
+
+---
+
+## Task 1: Repository skeleton
+
+**Files:**
+- Create: `.gitignore`, `.gitattributes`, `README.md`
+
+- [ ] **Step 1: Write `.gitignore`**
+
+```gitignore
+build/
+out/
+.vs/
+*.user
+vcpkg_installed/
+```
+
+- [ ] **Step 2: Write `.gitattributes`**
+
+```gitattributes
+* text=auto eol=lf
+*.png binary
+*.ico binary
+```
+
+- [ ] **Step 3: Write `README.md`**
+
+```markdown
+# OMT-Bridge
+
+A native Windows tool that takes any mix of OMT, OMT-HX and NDI sources and republishes
+them as any mix of OMT, OMT-HX and NDI outputs, converting between them.
+
+v1 is a local converter/proxy; the WAN tunnel (Host/Join) is v2.
+
+- Design: docs/superpowers/specs/2026-10-19-omt-bridge-design.md
+- Plan (M0+M1): docs/superpowers/plans/2026-10-19-omt-bridge-m0-m1-foundation.md
+
+## Build
+
+Needs Windows x64, Visual Studio 2022 or newer, the .NET 8 SDK, git, and vcpkg
+(`VCPKG_ROOT` set). Run from a VS developer shell.
+
+```powershell
+git clone --recurse-submodules https://github.com/bmsolutionsvn/OMT-Bridge
+cmake --preset release
+cmake --build --preset release
+```
+
+## Licence
+
+MIT.
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .gitignore .gitattributes README.md
+git commit -m "chore: repository skeleton"
+```
+
+---
+
+## Task 2: Build system and the first test
+
+**Files:**
+- Create: `CMakePresets.json`, `vcpkg.json`, `CMakeLists.txt`, `src/core/frame.h`, `tests/main.cpp`, `tests/frame_test.cpp`
+
+- [ ] **Step 1: Write `vcpkg.json`**
+
+```json
+{
+  "name": "omt-bridge",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": ["avcodec", "avformat", "swresample", "swscale", "srt", "nvcodec", "amf"]
+    },
+    "qtbase",
+    "ixwebsocket",
+    "nlohmann-json",
+    "doctest"
+  ],
+  "builtin-baseline": "2750401336fb7c95f6619657a46a7e798661341c"
+}
+```
+
+- [ ] **Step 2: Write `CMakePresets.json`**
+
+```json
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": { "VCPKG_TARGET_TRIPLET": "x64-windows" }
+    },
+    { "name": "release", "inherits": "base", "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } },
+    { "name": "debug", "inherits": "base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "release" },
+    { "name": "debug", "configurePreset": "debug" }
+  ]
+}
+```
+
+- [ ] **Step 3: Write the failing test `tests/frame_test.cpp`**
+
+```cpp
+#include <doctest/doctest.h>
+
+#include "core/frame.h"
+
+TEST_CASE("a frame reports its plane sizes") {
+  ob::Frame f;
+  f.format.width = 1920;
+  f.format.height = 1080;
+  f.format.alpha = false;
+  CHECK(f.lumaBytes() == 1920u * 2u * 1080u);
+  CHECK(f.alphaBytes() == 0u);
+
+  f.format.alpha = true;
+  CHECK(f.alphaBytes() == 1920u * 1080u);
+}
+
+TEST_CASE("alphaOffset points past the luma plane and is null when there is no alpha") {
+  ob::Frame f;
+  f.format = ob::VideoFormat{4, 2, 60, 1, true};
+  CHECK(f.alphaOffset() == 4u * 2u * 2u);
+  f.format.alpha = false;
+  CHECK(f.alphaOffset() == ob::Frame::kNoAlpha);
+}
+
+TEST_CASE("valid() accepts an UYVY picture of the right size and rejects others") {
+  ob::Frame f;
+  f.format = ob::VideoFormat{4, 2, 60, 1, false};
+  f.uyvy.assign(f.lumaBytes(), 0x10);
+  CHECK(f.valid());
+
+  f.uyvy.assign(f.lumaBytes() - 1, 0x10);
+  CHECK_FALSE(f.valid());
+
+  f.format.width = 3;  // odd width is not UYVY
+  f.uyvy.assign(4096, 0x10);
+  CHECK_FALSE(f.valid());
+}
+```
+
+- [ ] **Step 4: Write `tests/main.cpp`**
+
+```cpp
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
+```
+
+- [ ] **Step 5: Write `src/core/frame.h`**
+
+```cpp
+#pragma once
+// The engine's one frame type: 8-bit 4:2:2 YUV, UYVY, or UYVA when alpha is present.
+// Design 6.3. Luma and chroma are limited range (16-235); the alpha plane is full range.
+// The layout matches OMT's and NDI's UYVA exactly: the UYVY plane, then the alpha plane.
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace ob {
+
+struct VideoFormat {
+  int width = 0;
+  int height = 0;
+  int fpsN = 60;
+  int fpsD = 1;
+  bool alpha = false;
+  bool operator==(const VideoFormat&) const = default;
+};
+
+struct Frame {
+  VideoFormat format;
+  bool premultiplied = false;
+  int64_t timestamp = 0;      // OMT units: 10,000,000 per second
+  std::vector<uint8_t> uyvy;  // luma plane, then the alpha plane when format.alpha
+
+  static constexpr size_t kNoAlpha = static_cast<size_t>(-1);
+
+  size_t lumaBytes() const {
+    return static_cast<size_t>(format.width) * 2u * static_cast<size_t>(format.height);
+  }
+  size_t alphaBytes() const {
+    return format.alpha ? static_cast<size_t>(format.width) * static_cast<size_t>(format.height) : 0u;
+  }
+  size_t alphaOffset() const { return format.alpha ? lumaBytes() : kNoAlpha; }
+
+  // A UYVY picture needs an even width, both dimensions at least 2, and exactly the right bytes.
+  bool valid() const {
+    if (format.width < 2 || format.height < 2 || format.width % 2 != 0) return false;
+    return uyvy.size() == lumaBytes() + alphaBytes();
+  }
+};
+
+}  // namespace ob
+```
+
+- [ ] **Step 6: Write `CMakeLists.txt`**
+
+```cmake
+cmake_minimum_required(VERSION 3.28)
+project(OMTBridge LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_compile_options(/W4 /permissive- /utf-8 /EHsc)
+add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+
+find_package(doctest CONFIG REQUIRED)
+
+# ---- tests ----
+# frame.h is header-only, so nothing links yet; ob_core is created in Task 6.
+add_executable(ob_tests
+  tests/main.cpp
+  tests/frame_test.cpp
+)
+target_include_directories(ob_tests PRIVATE tests)
+target_link_libraries(ob_tests PRIVATE doctest::doctest)
+```
+
+- [ ] **Step 7: Build and run the test to verify it passes**
+
+Run:
+```powershell
+cmake --preset release
+cmake --build --preset release
+.\build\release\ob_tests.exe
+```
+Expected: `[doctest] Status: SUCCESS!`, all three test cases pass.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add CMakeLists.txt CMakePresets.json vcpkg.json src/core/frame.h tests/main.cpp tests/frame_test.cpp
+git commit -m "build: CMake, vcpkg and the canonical Frame"
+```
+
+---
+
+## Task 3: Link OMT-HX as a submodule
+
+**Files:**
+- Create: `.gitmodules` (via `git submodule add`), `cmake/omt-runtime.cmake`
+- Modify: `CMakeLists.txt`
+
+- [ ] **Step 1: Add the submodule pinned at the reviewed commit**
+
+Run:
+```powershell
+git submodule add https://github.com/bmsolutionsvn/OMT-HX third_party/OMT-HX
+git -C third_party/OMT-HX fetch --all
+git -C third_party/OMT-HX checkout ae96aa1
+git -C third_party/OMT-HX submodule update --init --recursive
+```
+Expected: `third_party/OMT-HX/include/omthx/omthx.h` exists **and** it declares `void sendVideoUyvy(` and `enum class PixelFormat { Bgra, Uyvy, Gpu, Coded };`. If either is missing, the wrong commit was checked out.
+
+- [ ] **Step 2: Verify the pinned commit is at or after `ae96aa1`**
+
+Run:
+```powershell
+git -C third_party/OMT-HX merge-base --is-ancestor ae96aa1 HEAD; echo $LASTEXITCODE
+```
+Expected: `0` (ae96aa1 is an ancestor of HEAD).
+
+- [ ] **Step 3: Write `cmake/omt-runtime.cmake`**
+
+```cmake
+# OMT-HX is a submodule under third_party/; OMTHX_ROOT lets a developer point at a sibling
+# checkout instead, exactly like BreadCamera does.
+include_guard(GLOBAL)
+set(OMTHX_ROOT "${CMAKE_SOURCE_DIR}/third_party/OMT-HX" CACHE PATH "OMT-HX checkout")
+if(EXISTS "${OMTHX_ROOT}/include/omthx/omthx.h" AND EXISTS "${OMTHX_ROOT}/omt/libomt/libomt.h")
+  add_subdirectory("${OMTHX_ROOT}" omthx-build EXCLUDE_FROM_ALL)
+  set(OB_WITH_OMT ON)
+else()
+  set(OB_WITH_OMT OFF)
+  message(FATAL_ERROR "OMT-HX is missing at ${OMTHX_ROOT}. Run: git submodule update --init --recursive")
+endif()
+```
+
+- [ ] **Step 4: Add the runtime copy function and the FFmpeg/omthx dependency to `CMakeLists.txt`**
+
+Insert after `find_package(doctest CONFIG REQUIRED)`:
+
+```cmake
+# FFmpeg comes from vcpkg; its ffmpeg package provides FindFFMPEG.cmake, so no module is vendored.
+find_package(FFMPEG REQUIRED)
+include(cmake/omt-runtime.cmake)  # defines the omthx target and omthx_copy_runtime()
+
+# Copies the DLLs vcpkg does not manage (libomt, libvmx, and NDI when enabled) beside an exe.
+function(ob_copy_runtime target)
+  if(OB_WITH_OMT)
+    omthx_copy_runtime(${target})
+  endif()
+endfunction()
+```
+
+- [ ] **Step 5: Prove the link works with a compile-time check**
+
+Add to `tests/frame_test.cpp`:
+
+```cpp
+#include "omthx/omthx.h"
+
+TEST_CASE("the linked omthx is the UYVY build") {
+  // sendVideoUyvy and PixelFormat::Coded only exist at OMT-HX ae96aa1 or later (spec 6.3, 18.8).
+  static_assert(static_cast<int>(omthx::PixelFormat::Coded) >= 0);
+}
+```
+
+Add to the `ob_tests` target in `CMakeLists.txt`:
+
+```cmake
+target_link_libraries(ob_tests PRIVATE omthx)
+ob_copy_runtime(ob_tests)
+```
+
+- [ ] **Step 6: Build and run**
+
+Run:
+```powershell
+cmake --preset release
+cmake --build --preset release
+.\build\release\ob_tests.exe
+```
+Expected: SUCCESS. `build/release/libomt.dll` and `build/release/libvmx.dll` exist beside `ob_tests.exe`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add .gitmodules third_party/OMT-HX cmake/omt-runtime.cmake CMakeLists.txt tests/frame_test.cpp
+git commit -m "build: link OMT-HX at ae96aa1 and copy its runtime DLLs"
+```
+
+---
+
+## Task 4: NDI 6 SDK discovery, off by default in CI
+
+**Files:**
+- Create: `cmake/FindNDI.cmake`
+- Modify: `CMakeLists.txt`
+
+- [ ] **Step 1: Copy `FindNDI.cmake` from BreadCamera**
+
+Run:
+```powershell
+Copy-Item ..\BreadCamera\cmake\FindNDI.cmake cmake\FindNDI.cmake
+```
+
+- [ ] **Step 2: Confirm it targets the installed SDK, not a vendored copy**
+
+Run:
+```powershell
+Select-String -Path cmake\FindNDI.cmake -Pattern "NDI_SDK_DIR|NDI 6 SDK|Processing.NDI.Lib.x64"
+```
+Expected: three matches. If the file instead includes a vendored `ndi-sdk` header directory, you copied the wrong pattern — BreadStudio's copy is headers only and cannot be linked (spec 14.3).
+
+- [ ] **Step 3: Add the option to `CMakeLists.txt`**
+
+Insert before the `# ---- tests` block:
+
+```cmake
+# Optional NDI 6 SDK (spec 14.3). Absent in CI, so OB_WITH_NDI defaults to whatever is found.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+find_package(NDI)
+option(OB_WITH_NDI "Build the NDI adapters" ${NDI_FOUND})
+if(OB_WITH_NDI AND NOT NDI_FOUND)
+  message(WARNING "OB_WITH_NDI=ON but the NDI 6 SDK was not found; turning it off")
+  set(OB_WITH_NDI OFF)
+endif()
+message(STATUS "OB_WITH_NDI=${OB_WITH_NDI}")
+```
+
+- [ ] **Step 4: Extend `ob_copy_runtime` for NDI**
+
+```cmake
+function(ob_copy_runtime target)
+  if(OB_WITH_OMT)
+    omthx_copy_runtime(${target})
+  endif()
+  if(OB_WITH_NDI)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NDI_DLL}" "$<TARGET_FILE_DIR:${target}>")
+  endif()
+endfunction()
+```
+
+- [ ] **Step 5: Configure both ways and confirm**
+
+Run:
+```powershell
+cmake --preset release
+```
+Expected: the configure output contains `OB_WITH_NDI=ON` when the NDI 6 SDK is installed, `OB_WITH_NDI=OFF` when it is not. Both must configure cleanly.
+
+Run:
+```powershell
+cmake --preset release -DOB_WITH_NDI=OFF
+```
+Expected: configures and builds with NDI off.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add cmake/FindNDI.cmake CMakeLists.txt
+git commit -m "build: optional NDI 6 SDK, off when not installed"
+```
+
+---
+
+## Task 5: Two executables and CI
+
+**Files:**
+- Create: `src/engine/engine_main.cpp`, `src/ui/main.cpp`, `src/ui/main_window.h`, `src/ui/main_window.cpp`, `.github/workflows/build.yml`
+- Modify: `CMakeLists.txt`
+
+- [ ] **Step 1: Write `src/engine/engine_main.cpp` (a placeholder engine)**
+
+```cpp
+// OMT-Bridge-Engine.exe: headless. Task 15 replaces this body with the control server and graph.
+#include <cstdio>
+#include <string>
+
+int main(int argc, char** argv) {
+  int port = 0;
+  std::string token;
+  for (int i = 1; i + 1 < argc; i += 2) {
+    const std::string k = argv[i];
+    if (k == "--port") port = std::atoi(argv[i + 1]);
+    else if (k == "--token") token = argv[i + 1];
+  }
+  if (port == 0 || token.empty()) {
+    std::fprintf(stderr, "usage: omt-bridge-engine --port <n> --token <s>\n");
+    return 2;
+  }
+  std::printf("OMT Bridge engine listening on 127.0.0.1:%d\n", port);
+  std::fflush(stdout);
+  // Placeholder: exit cleanly so the shell's supervisor can be exercised.
+  for (;;) {
+    std::string line;
+    if (!std::getline(std::cin, line)) break;
+    if (line == "quit") break;
+  }
+  return 0;
+}
+```
+
+- [ ] **Step 2: Write `src/ui/main_window.h`**
+
+```cpp
+#pragma once
+#include <QMainWindow>
+#include <QLabel>
+
+namespace ob {
+class MainWindow : public QMainWindow {
+  Q_OBJECT
+ public:
+  explicit MainWindow(QWidget* parent = nullptr);
+ private:
+  QLabel* engine_state_ = nullptr;
+};
+}  // namespace ob
+```
+
+- [ ] **Step 3: Write `src/ui/main_window.cpp`**
+
+```cpp
+#include "ui/main_window.h"
+
+#include <QStatusBar>
+
+namespace ob {
+MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+  setWindowTitle(QStringLiteral("OMT Bridge"));
+  engine_state_ = new QLabel(QStringLiteral("Engine: stopped"), this);
+  statusBar()->addWidget(engine_state_);
+  resize(900, 560);
+}
+}  // namespace ob
+```
+
+- [ ] **Step 4: Write `src/ui/main.cpp`**
+
+```cpp
+#include <QApplication>
+#include "ui/main_window.h"
+
+int main(int argc, char** argv) {
+  QApplication app(argc, argv);
+  ob::MainWindow w;
+  w.show();
+  return app.exec();
+}
+```
+
+- [ ] **Step 5: Add the Qt and executable targets to `CMakeLists.txt`**
+
+Append:
+
+```cmake
+# ---- shells ----
+add_executable(omt-bridge-engine src/engine/engine_main.cpp)
+ob_copy_runtime(omt-bridge-engine)
+
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
+set(CMAKE_AUTOMOC ON)
+add_executable(omt-bridge WIN32 src/ui/main.cpp src/ui/main_window.cpp src/ui/main_window.h)
+target_link_libraries(omt-bridge PRIVATE Qt6::Widgets)
+```
+
+- [ ] **Step 6: Write `.github/workflows/build.yml`**
+
+```yaml
+# Configure, build and test OMT Bridge on every push and pull request.
+# NDI is not installed on the runner, so OB_WITH_NDI resolves to OFF (spec 14.4).
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\..\vcpkg-cache
+    steps:
+      - name: Check out OMT-Bridge and its submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
+      - name: Point at the runner's vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          git -C $env:VCPKG_INSTALLATION_ROOT fetch -q
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-
+
+      - name: Configure
+        run: cmake --preset release -DOB_WITH_NDI=OFF
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - name: Test
+        working-directory: build/release
+        run: .\ob_tests.exe
+```
+
+- [ ] **Step 7: Build locally and confirm both executables run**
+
+Run:
+```powershell
+cmake --preset release
+cmake --build --preset release
+.\build\release\omt-bridge-engine.exe --port 5990 --token t
+```
+Expected: prints `OMT Bridge engine listening on 127.0.0.1:5990`, then exits on EOF/`quit`.
+
+Run:
+```powershell
+.\build\release\omt-bridge.exe
+```
+Expected: a window titled `OMT Bridge` with a status bar reading `Engine: stopped`. Close it.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add CMakeLists.txt src/engine/engine_main.cpp src/ui .github/workflows/build.yml
+git commit -m "build: engine and UI executables, CI"
+```
+
+**M0 is complete when:** CI is green, `omt-bridge.exe` opens, and `omt-bridge-engine.exe --port N --token T` runs.
+
+---
+
+## Task 6: Signal state and the lift pattern
+
+**Files:**
+- Create: `src/core/signal_state.h`, `src/core/signal_state.cpp`, `tests/signal_state_test.cpp`
+- Modify: `CMakeLists.txt`, `tests/` list
+
+- [ ] **Step 1: Copy the header from BreadCamera**
+
+Run:
+```powershell
+Copy-Item ..\BreadCamera\src\core\signal_state.h src\core\signal_state.h
+Copy-Item ..\BreadCamera\src\core\signal_state.cpp src\core\signal_state.cpp
+```
+
+- [ ] **Step 2: Change the namespace `bc` to `ob`**
+
+Run:
+```powershell
+(Get-Content src\core\signal_state.h)  -replace '\bbc\b','ob' | Set-Content src\core\signal_state.h
+(Get-Content src\core\signal_state.cpp) -replace '\bbc\b','ob' | Set-Content src\core\signal_state.cpp
+```
+
+- [ ] **Step 3: Write the failing test `tests/signal_state_test.cpp`**
+
+```cpp
+#include <doctest/doctest.h>
+
+#include "core/signal_state.h"
+
+TEST_CASE("the four signal states have their fixed names") {
+  CHECK(ob::toString(ob::SignalState::Ready) == "Ready");
+  CHECK(ob::toString(ob::SignalState::Connecting) == "Connecting");
+  CHECK(ob::toString(ob::SignalState::Live) == "Live");
+  CHECK(ob::toString(ob::SignalState::Offline) == "Offline");
+}
+
+TEST_CASE("an absent error serialises to JSON null and a present one to an object") {
+  CHECK(ob::errorToJson(std::nullopt).is_null());
+  const auto j = ob::errorToJson(ob::ErrorInfo{"ndi-failed", "no runtime"});
+  CHECK(j["code"] == "ndi-failed");
+  CHECK(j["message"] == "no runtime");
+}
+```
+
+- [ ] **Step 4: Add the test to `CMakeLists.txt` and run it to verify it passes**
+
+Add `tests/signal_state_test.cpp` to the `ob_tests` sources.
+
+Run:
+```powershell
+cmake --build --preset release; .\build\release\ob_tests.exe
+```
+Expected: SUCCESS. (The sources already existed in Task 2's list; they now exist for real.)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/core/signal_state.h src/core/signal_state.cpp tests/signal_state_test.cpp CMakeLists.txt
+git commit -m "feat(core): signal states, lifted from BreadCamera"
+```
+
+---
+
+## Task 7: Drop-oldest queue
+
+**Files:**
+- Create: `src/core/bounded_queue.h`, `tests/bounded_queue_test.cpp`
+
+- [ ] **Step 1: Copy and rename**
+
+Run:
+```powershell
+Copy-Item ..\BreadCamera\src\core\bounded_queue.h src\core\bounded_queue.h
+(Get-Content src\core\bounded_queue.h) -replace '\bbc\b','ob' | Set-Content src\core\bounded_queue.h
+```
+Expected: the file is header-only, is a template, drops the oldest item when full, and `push()` never blocks.
+
+- [ ] **Step 2: Write the failing test `tests/bounded_queue_test.cpp`**
+
+```cpp
+#include <doctest/doctest.h>
+
+#include "core/bounded_queue.h"
+
+using namespace std::chrono_literals;
+
+TEST_CASE("push never blocks and drops the oldest when full") {
+  ob::BoundedQueue<int> q(2);
+  CHECK_FALSE(q.push(1));
+  CHECK_FALSE(q.push(2));
+  CHECK(q.push(3));  // dropped 1
+  CHECK(q.dropped() == 1);
+  CHECK(q.pop(0ms) == 2);
+  CHECK(q.pop(0ms) == 3);
+  CHECK_FALSE(q.pop(0ms).has_value());
+}
+
+TEST_CASE("close unblocks a waiting pop and reopen resumes") {
+  ob::BoundedQueue<int> q(2);
+  q.close();
+  CHECK_FALSE(q.push(1));
+  CHECK_FALSE(q.pop(0ms).has_value());
+  q.reopen();
+  CHECK_FALSE(q.push(1));
+  CHECK(q.pop(0ms) == 1);
+}
+```
+
+- [ ] **Step 3: Add `closed()` to the queue**
+
+`OutputRow`'s worker must tell a timeout apart from a close. Insert into `BoundedQueue`'s public section:
+
+```cpp
+  bool closed() const {
+    std::lock_guard l(m_);
+    return closed_;
+  }
+```
+
+- [ ] **Step 4: Add to `CMakeLists.txt` and run**
+
+Run:
+```powershell
+cmake --build --preset release; .\build\release\ob_tests.exe
+```
+Expected: SUCCESS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/core/bounded_queue.h tests/bounded_queue_test.cpp CMakeLists.txt
+git commit -m "feat(core): drop-oldest queue, lifted from BreadCamera"
+```
+
+---
+
+## Task 8: The Bridge data model
+
+**Files:**
+- Create: `src/core/bridge_model.h`, `src/core/bridge_model.cpp`, `tests/bridge_model_test.cpp`
+
+- [ ] **Step 1: Write the failing test `tests/bridge_model_test.cpp`**
+
+```cpp
+#include <doctest/doctest.h>
+
+#include "core/bridge_model.h"
+
+TEST_CASE("a new bridge has a default name and no sources or outputs") {
+  ob::Bridge b;
+  CHECK(b.name.empty());
+  CHECK(b.sources.empty());
+  CHECK(b.outputs.empty());
+}
+
+TEST_CASE("findSource and findOutput return nullptr for an unknown id") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC (Cam)"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt});
+  CHECK(b.findSource("s1") != nullptr);
+  CHECK(b.findSource("nope") == nullptr);
+  CHECK(b.findOutput("o1") != nullptr);
+  CHECK(b.findOutput("nope") == nullptr);
+}
+
+TEST_CASE("outputsFor counts every output that reads one source (N x M)") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "CAM"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::OmtHx});
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::Ndi});
+  b.outputs.push_back(ob::Output{.id = "o3", .sourceId = "s2", .target = ob::OutputTarget::Omt});
+  CHECK(b.outputsFor("s1") == 2u);
+  CHECK(b.outputsFor("s2") == 1u);
+  CHECK(b.outputsFor("none") == 0u);
+}
+
+TEST_CASE("the advertised name joins the bridge and row names") {
+  ob::Bridge b;
+  b.name = "Hanoi Bridge";
+  ob::Output o{.id = "o1", .sourceId = "", .target = ob::OutputTarget::Omt, .name = "Cam 1"};
+  CHECK(b.advertisedName(o) == "Hanoi Bridge (Cam 1)");
+}
+```
+
+- [ ] **Step 2: Write `src/core/bridge_model.h`**
+
+```cpp
+#pragma once
+// The three objects of the bridge (design 5). Bridge is level 2; Source and Output are level 3.
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "core/signal_state.h"
+
+namespace ob {
+
+enum class SourceKind { Omt, OmtHx, Ndi };
+enum class OutputTarget { Omt, OmtHx, Ndi };
+enum class HxCodec { Hevc, H264 };
+enum class Quality { Low, Medium, High };
+enum class AlphaMode { Auto, Off };
+
+std::string_view toString(SourceKind k);
+std::string_view toString(OutputTarget t);
+std::string_view toString(HxCodec c);
+std::string_view toString(Quality q);
+std::string_view toString(AlphaMode a);
+
+// What a source is sending, once known. Kept separate from core/frame.h's VideoFormat so
+// core/ stays free of the omthx headers; the adapters copy one into the other.
+struct VideoFormatView {
+  int width = 0;
+  int height = 0;
+  int fpsN = 60;
+  int fpsD = 1;
+  bool alpha = false;
+  bool known = false;
+  bool operator==(const VideoFormatView&) const = default;
+};
+
+struct Source {
+  std::string id;
+  SourceKind kind = SourceKind::Omt;
+  std::string address;  // OMT: "HOSTNAME (name)"  ·  NDI: the NDI source name
+  SignalState state = SignalState::Ready;
+  VideoFormatView format;  // width/height/fps/alpha once known; all zero until then
+  std::optional<HxCodec> codec;  // OMT-HX only
+  bool operator==(const Source&) const = default;
+};
+
+struct Output {
+  std::string id;
+  std::string sourceId;  // any Source, or empty
+  OutputTarget target = OutputTarget::Omt;
+  HxCodec codec = HxCodec::Hevc;
+  Quality quality = Quality::Medium;
+  AlphaMode alpha = AlphaMode::Auto;
+  std::string name;
+  SignalState state = SignalState::Ready;
+  bool operator==(const Output&) const = default;
+};
+
+struct BridgeSettings {
+  OutputTarget defaultTarget = OutputTarget::OmtHx;
+  Quality defaultQuality = Quality::Medium;
+  int thumbnailIntervalMs = 2000;
+  bool startEngineWithApp = false;
+  bool operator==(const BridgeSettings&) const = default;
+};
+
+struct Bridge {
+  std::string name;
+  std::vector<Source> sources;
+  std::vector<Output> outputs;
+  BridgeSettings settings;
+
+  Source* findSource(const std::string& id);
+  const Source* findSource(const std::string& id) const;
+  Output* findOutput(const std::string& id);
+  const Output* findOutput(const std::string& id) const;
+
+  // N x M: how many outputs read this source.
+  size_t outputsFor(const std::string& sourceId) const;
+
+  // "<Bridge.name> (<Output.name>)", the name a remote app sees (design 5.3).
+  std::string advertisedName(const Output& o) const;
+};
+
+}  // namespace ob
+```
+
+- [ ] **Step 3: Write `src/core/bridge_model.cpp`**
+
+```cpp
+#include "core/bridge_model.h"
+
+#include <algorithm>
+
+namespace ob {
+
+std::string_view toString(SourceKind k) {
+  switch (k) {
+    case SourceKind::Omt: return "OMT";
+    case SourceKind::OmtHx: return "OMT-HX";
+    case SourceKind::Ndi: return "NDI";
+  }
+  return "OMT";
+}
+
+std::string_view toString(OutputTarget t) {
+  switch (t) {
+    case OutputTarget::Omt: return "OMT";
+    case OutputTarget::OmtHx: return "OMT-HX";
+    case OutputTarget::Ndi: return "NDI";
+  }
+  return "OMT";
+}
+
+std::string_view toString(HxCodec c) { return c == HxCodec::Hevc ? "HEVC" : "H.264"; }
+std::string_view toString(Quality q) {
+  switch (q) {
+    case Quality::Low: return "Low";
+    case Quality::Medium: return "Medium";
+    case Quality::High: return "High";
+  }
+  return "Medium";
+}
+std::string_view toString(AlphaMode a) { return a == AlphaMode::Auto ? "Auto" : "Off"; }
+
+Source* Bridge::findSource(const std::string& id) {
+  const auto it = std::find_if(sources.begin(), sources.end(), [&](const Source& s) { return s.id == id; });
+  return it == sources.end() ? nullptr : &*it;
+}
+const Source* Bridge::findSource(const std::string& id) const {
+  return const_cast<Bridge*>(this)->findSource(id);
+}
+Output* Bridge::findOutput(const std::string& id) {
+  const auto it = std::find_if(outputs.begin(), outputs.end(), [&](const Output& o) { return o.id == id; });
+  return it == outputs.end() ? nullptr : &*it;
+}
+const Output* Bridge::findOutput(const std::string& id) const {
+  return const_cast<Bridge*>(this)->findOutput(id);
+}
+
+size_t Bridge::outputsFor(const std::string& sourceId) const {
+  return static_cast<size_t>(std::count_if(outputs.begin(), outputs.end(),
+                                           [&](const Output& o) { return o.sourceId == sourceId; }));
+}
+
+std::string Bridge::advertisedName(const Output& o) const {
+  if (name.empty()) return o.name;
+  return name + " (" + o.name + ")";
+}
+
+}  // namespace ob
+```
+
+- [ ] **Step 4: Add to `CMakeLists.txt` and run**
+
+Add `tests/bridge_model_test.cpp` to `ob_tests`.
+
+Run:
+```powershell
+cmake --build --preset release; .\build\release\ob_tests.exe
+```
+Expected: SUCCESS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/core/bridge_model.h src/core/bridge_model.cpp tests/bridge_model_test.cpp CMakeLists.txt
+git commit -m "feat(core): Bridge, Source and Output model"
+```
+
+---
+
+## Task 9: Bridge JSON persistence
+
+**Files:**
+- Create: `src/core/bridge_store.h`, `src/core/bridge_store.cpp`, `tests/bridge_store_test.cpp`
+
+- [ ] **Step 1: Write the failing test `tests/bridge_store_test.cpp`**
+
+```cpp
+#include <doctest/doctest.h>
+
+#include <filesystem>
+#include <fstream>
+
+#include "core/bridge_store.h"
+
+namespace fs = std::filesystem;
+
+static fs::path tempFile(const char* name) {
+  const fs::path p = fs::temp_directory_path() / "ob-bridge-tests" / name;
+  fs::create_directories(p.parent_path());
+  return p;
+}
+
+TEST_CASE("a bridge round-trips through JSON unchanged") {
+  ob::Bridge b;
+  b.name = "Hanoi Bridge";
+  b.settings.defaultTarget = ob::OutputTarget::Ndi;
+  b.settings.thumbnailIntervalMs = 1500;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::OmtHx, .address = "PC (Cam)",
+                                 .codec = ob::HxCodec::H264});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Ndi,
+                                 .quality = ob::Quality::High, .alpha = ob::AlphaMode::Off,
+                                 .name = "Cam 1"});
+
+  const fs::path p = tempFile("round-trip.ombridge.json");
+  ob::saveBridge(b, p);
+
+  const auto loaded = ob::loadBridge(p);
+  REQUIRE(loaded.has_value());
+  CHECK(loaded->name == b.name);
+  CHECK(loaded->sources == b.sources);
+  CHECK(loaded->outputs == b.outputs);
+  CHECK(loaded->settings == b.settings);
+}
+
+TEST_CASE("loading an absent file returns no value") {
+  CHECK_FALSE(ob::loadBridge(tempFile("does-not-exist.ombridge.json")).has_value());
+}
+
+TEST_CASE("loading a file that is not JSON reports an error and returns no value") {
+  const fs::path p = tempFile("garbage.ombridge.json");
+  std::ofstream(p) << "this is not json";
+  CHECK_FALSE(ob::loadBridge(p).has_value());
+}
+
+TEST_CASE("an unknown enum string in the file is rejected, not silently defaulted") {
+  const fs::path p = tempFile("bad-enum.ombridge.json");
+  std::ofstream(p) << R"({"name":"x","sources":[{"id":"s1","kind":"Whatever"}],"outputs":[]})";
+  CHECK_FALSE(ob::loadBridge(p).has_value());
+}
+```
+
+- [ ] **Step 2: Write `src/core/bridge_store.h`**
+
+```cpp
+#pragma once
+// Bridge persistence (design 5.1, 6.6). One JSON file, owned by the UI. A load that fails
+// returns no value; it never invents a default bridge.
+#include <filesystem>
+#include <optional>
+
+#include "core/bridge_model.h"
+
+namespace ob {
+
+void saveBridge(const Bridge& bridge, const std::filesystem::path& path);
+std::optional<Bridge> loadBridge(const std::filesystem::path& path);
+
+}  // namespace ob
+```
+
+- [ ] **Step 3: Write `src/core/bridge_store.cpp`**
+
+```cpp
+#include "core/bridge_store.h"
+
+#include <fstream>
+
+#include <nlohmann/json.hpp>
+
+using nlohmann::json;
+
+namespace ob {
+namespace {
+
+const char* kKindNames[] = {"Omt", "OmtHx", "Ndi"};
+const char* kTargetNames[] = {"Omt", "OmtHx", "Ndi"};
+const char* kCodecNames[] = {"Hevc", "H264"};
+const char* kQualityNames[] = {"Low", "Medium", "High"};
+const char* kAlphaNames[] = {"Auto", "Off"};
+
+template <class E, size_t N>
+std::optional<E> parseEnum(const std::string& s, const char* const (&names)[N]) {
+  for (size_t i = 0; i < N; ++i) {
+    if (s == names[i]) return static_cast<E>(i);
+  }
+  return std::nullopt;
+}
+
+std::string enumName(SourceKind k) { return kKindNames[static_cast<int>(k)]; }
+std::string enumName(OutputTarget t) { return kTargetNames[static_cast<int>(t)]; }
+std::string enumName(HxCodec c) { return kCodecNames[static_cast<int>(c)]; }
+std::string enumName(Quality q) { return kQualityNames[static_cast<int>(q)]; }
+std::string enumName(AlphaMode a) { return kAlphaNames[static_cast<int>(a)]; }
+
+}  // namespace
+
+void saveBridge(const Bridge& b, const std::filesystem::path& path) {
+  json j;
+  j["name"] = b.name;
+  j["settings"] = {{"defaultTarget", enumName(b.settings.defaultTarget)},
+                   {"defaultQuality", enumName(b.settings.defaultQuality)},
+                   {"thumbnailIntervalMs", b.settings.thumbnailIntervalMs},
+                   {"startEngineWithApp", b.settings.startEngineWithApp}};
+
+  j["sources"] = json::array();
+  for (const Source& s : b.sources) {
+    json js{{"id", s.id}, {"kind", enumName(s.kind)}, {"address", s.address}};
+    if (s.codec.has_value()) js["codec"] = enumName(*s.codec);
+    j["sources"].push_back(std::move(js));
+  }
+
+  j["outputs"] = json::array();
+  for (const Output& o : b.outputs) {
+    j["outputs"].push_back(json{{"id", o.id},
+                                {"sourceId", o.sourceId},
+                                {"target", enumName(o.target)},
+                                {"codec", enumName(o.codec)},
+                                {"quality", enumName(o.quality)},
+                                {"alpha", enumName(o.alpha)},
+                                {"name", o.name}});
+  }
+
+  const std::filesystem::path tmp = path.string() + ".tmp";
+  std::ofstream(tmp, std::ios::binary | std::ios::trunc) << j.dump(2);
+  std::filesystem::rename(tmp, path);
+}
+
+std::optional<Bridge> loadBridge(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return std::nullopt;
+
+  json j;
+  try {
+    j = json::parse(in);
+  } catch (const json::exception&) {
+    return std::nullopt;
+  }
+
+  try {
+    Bridge b;
+    b.name = j.value("name", std::string{});
+
+    if (j.contains("settings")) {
+      const auto& s = j["settings"];
+      if (auto v = parseEnum<OutputTarget>(s.value("defaultTarget", std::string{"OmtHx"}), kTargetNames))
+        b.settings.defaultTarget = *v;
+      else
+        return std::nullopt;
+      if (auto v = parseEnum<Quality>(s.value("defaultQuality", std::string{"Medium"}), kQualityNames))
+        b.settings.defaultQuality = *v;
+      else
+        return std::nullopt;
+      b.settings.thumbnailIntervalMs = s.value("thumbnailIntervalMs", 2000);
+      b.settings.startEngineWithApp = s.value("startEngineWithApp", false);
+    }
+
+    for (const auto& js : j.value("sources", json::array())) {
+      Source s;
+      s.id = js.value("id", std::string{});
+      auto kind = parseEnum<SourceKind>(js.value("kind", std::string{}), kKindNames);
+      if (!kind) return std::nullopt;
+      s.kind = *kind;
+      s.address = js.value("address", std::string{});
+      if (js.contains("codec")) {
+        auto c = parseEnum<HxCodec>(js.value("codec", std::string{}), kCodecNames);
+        if (!c) return std::nullopt;
+        s.codec = *c;
+      }
+      b.sources.push_back(std::move(s));
+    }
+
+    for (const auto& jo : j.value("outputs", json::array())) {
+      Output o;
+      o.id = jo.value("id", std::string{});
+      o.sourceId = jo.value("sourceId", std::string{});
+      auto target = parseEnum<OutputTarget>(jo.value("target", std::string{}), kTargetNames);
+      if (!target) return std::nullopt;
+      o.target = *target;
+      auto codec = parseEnum<HxCodec>(jo.value("codec", std::string{"Hevc"}), kCodecNames);
+      if (!codec) return std::nullopt;
+      o.codec = *codec;
+      auto quality = parseEnum<Quality>(jo.value("quality", std::string{"Medium"}), kQualityNames);
+      if (!quality) return std::nullopt;
+      o.quality = *quality;
+      auto alpha = parseEnum<AlphaMode>(jo.value("alpha", std::string{"Auto"}), kAlphaNames);
+      if (!alpha) return std::nullopt;
+      o.alpha = *alpha;
+      o.name = jo.value("name", std::string{});
+      b.outputs.push_back(std::move(o));
+    }
+
+    return b;
+  } catch (const json::exception&) {
+    return std::nullopt;
+  }
+}
+
+}  // namespace ob
+```
+
+- [ ] **Step 4: Add to `CMakeLists.txt` and run**
+
+Add `tests/bridge_store_test.cpp` to `ob_tests`.
+
+Run:
+```powershell
+cmake --build --preset release; .\build\release\ob_tests.exe
+```
+Expected: SUCCESS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/core/bridge_store.h src/core/bridge_store.cpp tests/bridge_store_test.cpp CMakeLists.txt
+git commit -m "feat(core): Bridge JSON save and load"
+```
+
+---
+
+## Task 10: SourceHub and reference counting (demand-driven)
+
+**Files:**
+- Create: `src/engine/source_hub.h`, `src/engine/source_hub.cpp`, `tests/source_hub_test.cpp`
+- Modify: `CMakeLists.txt`
+
+- [ ] **Step 1: Write the failing test `tests/source_hub_test.cpp`**
+
+```cpp
+#include <doctest/doctest.h>
+
+#include <atomic>
+#include <memory>
+
+#include "engine/source_hub.h"
+
+static std::shared_ptr<const ob::Frame> makeFrame(int w, int h) {
+  auto f = std::make_shared<ob::Frame>();
+  f->format = ob::VideoFormat{w, h, 60, 1, false};
+  f->uyvy.assign(f->lumaBytes(), 0x10);
+  return f;
+}
+
+TEST_CASE("a hub runs when referenced or when its thumbnail is wanted, and stops otherwise") {
+  ob::SourceHub hub("s1");
+  CHECK_FALSE(hub.running());
+
+  hub.addRef();
+  CHECK(hub.running());
+  hub.addRef();
+  hub.release();
+  CHECK(hub.running());  // one output left
+  hub.release();
+  CHECK_FALSE(hub.running());
+
+  hub.setThumbnailWanted(true);
+  CHECK(hub.running());
+  hub.setThumbnailWanted(false);
+  CHECK_FALSE(hub.running());
+}
+
+TEST_CASE("running changes are reported once per transition") {
+  ob::SourceHub hub("s1");
+  std::atomic<int> starts{0}, stops{0};
+  hub.setOnRunningChanged([&](bool on) { (on ? starts : stops).fetch_add(1); });
+
+  hub.addRef();
+  hub.addRef();  // no second start
+  hub.release();
+  hub.release();
+
+  CHECK(starts.load() == 1);
+  CHECK(stops.load() == 1);
+}
+
+TEST_CASE("the latest frame is the newest published one") {
+  ob::SourceHub hub("s1");
+  CHECK(hub.latest() == nullptr);
+  hub.publish(makeFrame(4, 2));
+  hub.publish(makeFrame(8, 2));
+  REQUIRE(hub.latest() != nullptr);
+  CHECK(hub.latest()->format.width == 8);
+}
+```
+
+- [ ] **Step 2: Write `src/engine/source_hub.h`**
+
+```cpp
+#pragma once
+// One source (design 6.4). Publishes the newest decoded frame into a single slot; the
+// adapter is meant to run only while the hub is running, which is exactly when at least one
+// output references the source or its thumbnail is wanted (demand-driven).
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
+
+#include "core/frame.h"
+
+namespace ob {
+
+class SourceHub {
+ public:
+  using RunningChanged = std::function<void(bool running)>;
+
+  explicit SourceHub(std::string id) : id_(std::move(id)) {}
+
+  const std::string& id() const { return id_; }
+
+  void addRef();
+  void release();
+  int refs() const;
+
+  void setThumbnailWanted(bool wanted);
+  bool thumbnailWanted() const;
+
+  bool running() const;
+
+  // Called once per running transition. The engine starts or stops the input adapter here.
+  void setOnRunningChanged(RunningChanged cb);
+
+  // Overwrites the slot; never queues. A frame shared by N outputs is decoded once (design 6.5).
+  void publish(std::shared_ptr<const Frame> frame);
+  std::shared_ptr<const Frame> latest() const;
+
+  uint64_t framesPublished() const;
+
+ private:
+  bool computeRunning() const;  // caller holds mu_
+  void maybeTransition();       // fires the callback once per transition, outside the lock
+
+  std::string id_;
+  mutable std::mutex mu_;
+  int refs_ = 0;
+  bool thumbnailWanted_ = false;
+  bool running_ = false;
+  RunningChanged onRunningChanged_;
+
+  std::shared_ptr<const Frame> latest_;
+  uint64_t published_ = 0;
+};
+
+}  // namespace ob
+```
+
+- [ ] **Step 3: Write `src/engine/source_hub.cpp`**
+
+```cpp
+#include "engine/source_hub.h"
+
+#include <utility>
+
+namespace ob {
+
+bool SourceHub::computeRunning() const { return refs_ > 0 || thumbnailWanted_; }
+
+void SourceHub::maybeTransition() {
+  bool next = false;
+  {
+    std::lock_guard l(mu_);
+    next = computeRunning();
+    if (next == running_) return;
+    running_ = next;
+  }
+  // Outside the lock: the callback starts or stops an adapter, which may call back in.
+  if (onRunningChanged_) onRunningChanged_(next);
+}
+
+void SourceHub::addRef() {
+  {
+    std::lock_guard l(mu_);
+    ++refs_;
+  }
+  maybeTransition();
+}
+
+void SourceHub::release() {
+  {
+    std::lock_guard l(mu_);
+    if (refs_ > 0) --refs_;
+  }
+  maybeTransition();
+}
+
+int SourceHub::refs() const {
+  std::lock_guard l(mu_);
+  return refs_;
+}
+
+void SourceHub::setThumbnailWanted(bool wanted) {
+  {
+    std::lock_guard l(mu_);
+    thumbnailWanted_ = wanted;
+  }
+  maybeTransition();
+}
+
+bool SourceHub::thumbnailWanted() const {
+  std::lock_guard l(mu_);
+  return thumbnailWanted_;
+}
+
+bool SourceHub::running() const {
+  std::lock_guard l(mu_);
+  return running_;
+}
+
+void SourceHub::setOnRunningChanged(RunningChanged cb) {
+  std::lock_guard l(mu_);
+  onRunningChanged_ = std::move(cb);
+}
+
+void SourceHub::publish(std::shared_ptr<const Frame> frame) {
+  std::lock_guard l(mu_);
+  latest_ = std::move(frame);
+  ++published_;
+}
+
+std::shared_ptr<const Frame> SourceHub::latest() const {
+  std::lock_guard l(mu_);
+  return latest_;
+}
+
+uint64_t SourceHub::framesPublished() const {
+  std::lock_guard l(mu_);
+  return published_;
+}
+
+}  // namespace ob
+```
+
+- [ ] **Step 4: Add `ob_engine` to `CMakeLists.txt`**
+
+```cmake
+# ---- engine ----
+add_library(ob_engine STATIC
+  src/engine/source_hub.cpp   # Tasks 11-15 append output_row, bridge_graph, command_router, control_server, engine
+)
+target_include_directories(ob_engine PUBLIC src)
+target_link_libraries(ob_engine PUBLIC ob_core ixwebsocket::ixwebsocket)
+target_link_libraries(ob_engine PUBLIC bcrypt)
+```
+
+Add `ixwebsocket::ixwebsocket` to `ob_tests`'s link libraries, and add `tests/source_hub_test.cpp`.
+
+- [ ] **Step 5: Run the tests**
+
+Run:
+```powershell
+cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
+```
+Expected: SUCCESS, including `running changes are reported once per transition`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/engine/source_hub.h src/engine/source_hub.cpp tests/source_hub_test.cpp CMakeLists.txt
+git commit -m "feat(engine): reference-counted SourceHub"
+```
+
+---
+
+## Task 11: OutputRow with drop-oldest and isolation
+
+**Files:**
+- Create: `src/engine/output_row.h`, `src/engine/output_row.cpp`, `tests/output_row_test.cpp`
+
+- [ ] **Step 1: Write the failing test `tests/output_row_test.cpp`**
+
+```cpp
+#include <doctest/doctest.h>
+
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+#include "engine/output_row.h"
+
+using namespace std::chrono_literals;
+
+static std::shared_ptr<const ob::Frame> frame(int64_t ts) {
+  auto f = std::make_shared<ob::Frame>();
+  f->format = ob::VideoFormat{4, 2, 60, 1, false};
+  f->uyvy.assign(f->lumaBytes(), 0x10);
+  f->timestamp = ts;
+  return f;
+}
+
+TEST_CASE("a row delivers what it is offered, in order") {
+  std::mutex m;
+  std::vector<int64_t> got;
+  ob::OutputRow row("o1", "s1", [&](const std::shared_ptr<const ob::Frame>& f) {
+    std::lock_guard l(m);
+    got.push_back(f->timestamp);
+  });
+  row.start();
+  for (int64_t i = 0; i < 3; ++i) row.offer(frame(i));
+
+  // stop() closes the queue and clears anything not yet delivered, so wait for delivery first.
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (row.delivered() < 3 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  row.stop();
+
+  CHECK(got == std::vector<int64_t>{0, 1, 2});
+}
+
+TEST_CASE("a slow sink drops the oldest frames and never blocks the producer") {
+  std::atomic<bool> gate{false};
+  ob::OutputRow row("o1", "s1",
+                    [&](const std::shared_ptr<const ob::Frame>&) {
+                      while (!gate.load()) std::this_thread::sleep_for(1ms);
+                    }, /*capacity=*/2u);
+  row.start();
+
+  // The worker takes one and blocks; two more fill the queue; the next two drop the oldest.
+  for (int64_t i = 0; i < 5; ++i) row.offer(frame(i));
+  gate.store(true);
+  row.stop();
+
+  CHECK(row.dropped() >= 2u);
+}
+
+TEST_CASE("stopping a row unblocks its worker") {
+  ob::OutputRow row("o1", "s1", [](const std::shared_ptr<const ob::Frame>&) {});
+  row.start();
+  row.stop();  // must not hang
+  CHECK(true);
+}
+```
+
+- [ ] **Step 2: Write `src/engine/output_row.h`**
+
+```cpp
+#pragma once
+// One output (design 6.5). Reads its source's newest frame and hands it to a sink. Its own
+// drop-oldest queue means a slow or failed sink can never block another row or its SourceHub.
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <thread>
+
+#include "core/bounded_queue.h"
+#include "core/frame.h"
+
+namespace ob {
+
+class OutputRow {
+ public:
+  using Deliver = std::function<void(const std::shared_ptr<const Frame>&)>;
+
+  OutputRow(std::string id, std::string sourceId, Deliver deliver, size_t capacity = 4);
+  ~OutputRow();
+  OutputRow(const OutputRow&) = delete;
+  OutputRow& operator=(const OutputRow&) = delete;
+
+  void start();
+  void stop();
+
+  void offer(std::shared_ptr<const Frame> frame);
+
+  const std::string& id() const { return id_; }
+  const std::string& sourceId() const { return sourceId_; }
+  void setSourceId(std::string id) { sourceId_ = std::move(id); }
+
+  uint64_t delivered() const { return delivered_; }
+  uint64_t dropped() const { return queue_.dropped(); }
+
+ private:
+  void run();
+
+  std::string id_;
+  std::string sourceId_;
+  Deliver deliver_;
+  BoundedQueue<std::shared_ptr<const Frame>> queue_;
+  std::thread thread_;
+  uint64_t delivered_ = 0;
+};
+
+}  // namespace ob
+```
+
+- [ ] **Step 3: Write `src/engine/output_row.cpp`**
+
+```cpp
+#include "engine/output_row.h"
+
+#include <atomic>
+
+namespace ob {
+namespace {
+constexpr auto kPopTimeout = std::chrono::milliseconds(100);
+}
+
+OutputRow::OutputRow(std::string id, std::string sourceId, Deliver deliver, size_t capacity)
+    : id_(std::move(id)), sourceId_(std::move(sourceId)), deliver_(std::move(deliver)),
+      queue_(capacity) {}
+
+OutputRow::~OutputRow() { stop(); }
+
+void OutputRow::start() {
+  if (thread_.joinable()) return;
+  thread_ = std::thread([this] { run(); });
+}
+
+void OutputRow::stop() {
+  queue_.close();
+  if (thread_.joinable()) thread_.join();
+}
+
+void OutputRow::offer(std::shared_ptr<const Frame> frame) { queue_.push(std::move(frame)); }
+
+void OutputRow::run() {
+  for (;;) {
+    auto f = queue_.pop(kPopTimeout);
+    if (!f.has_value()) {
+      if (queue_.closed()) return;  // closed by stop(); a timeout just keeps waiting
+      continue;
+    }
+    deliver_(*f);
+    ++delivered_;
+  }
+}
+
+}  // namespace ob
+```
+
+> `BoundedQueue::closed()` is added in Task 7, Step 5.
+
+- [ ] **Step 4: Add to `CMakeLists.txt` and run**
+
+Add `tests/output_row_test.cpp` and `src/engine/output_row.cpp`.
+
+Run:
+```powershell
+cmake --build --preset release; .\build\release\ob_tests.exe
+```
+Expected: SUCCESS, including the drop test.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/engine/output_row.h src/engine/output_row.cpp tests/output_row_test.cpp CMakeLists.txt
+git commit -m "feat(engine): OutputRow with drop-oldest isolation"
+```
+
+---
+
+## Task 12: BridgeGraph reconciles the model
+
+**Files:**
+- Create: `src/engine/bridge_graph.h`, `src/engine/bridge_graph.cpp`, `tests/bridge_graph_test.cpp`
+
+- [ ] **Step 1: Write the failing test `tests/bridge_graph_test.cpp`**
+
+```cpp
+#include <doctest/doctest.h>
+
+#include "engine/bridge_graph.h"
+
+TEST_CASE("one source feeding two outputs counts two refs on one hub (N x M)") {
+  ob::Bridge b;
+  b.name = "B";
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::OmtHx, .name = "B"});
+
+  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  graph.apply(b);
+
+  CHECK(graph.hubCount() == 1u);
+  CHECK(graph.rowCount() == 2u);
+  REQUIRE(graph.hub("s1") != nullptr);
+  CHECK(graph.hub("s1")->refs() == 2);
+  CHECK(graph.hub("s1")->running());
+}
+
+TEST_CASE("removing an output releases its ref, and an unreferenced source goes idle") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+
+  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  graph.apply(b);
+  REQUIRE(graph.hub("s1")->refs() == 1);
+
+  b.outputs.clear();
+  graph.apply(b);
+
+  CHECK(graph.rowCount() == 0u);
+  CHECK(graph.hub("s1")->refs() == 0);
+  CHECK_FALSE(graph.hub("s1")->running());
+}
+
+TEST_CASE("an output with no source is kept as an idle row") {
+  ob::Bridge b;
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "", .target = ob::OutputTarget::Omt, .name = "A"});
+
+  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  graph.apply(b);
+
+  CHECK(graph.rowCount() == 1u);
+  CHECK(graph.hubCount() == 0u);
+}
+
+TEST_CASE("fan-out offers each published frame to every row that reads the source") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "B"});
+
+  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  graph.apply(b);
+  graph.start();
+
+  auto f = std::make_shared<ob::Frame>();
+  f->format = ob::VideoFormat{4, 2, 60, 1, false};
+  f->uyvy.assign(f->lumaBytes(), 0x10);
+  graph.publish("s1", f);
+  graph.stop();
+
+  // publish() hands the frame to each row's queue; both rows were offered it.
+  CHECK(graph.offeredToRow("o1") == 1u);
+  CHECK(graph.offeredToRow("o2") == 1u);
+}
+
+TEST_CASE("publishing to a source that has no rows is a no-op") {
+  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  auto f = std::make_shared<ob::Frame>();
+  graph.publish("gone", f);  // must not throw
+  CHECK(true);
+}
+```
+
+- [ ] **Step 2: Write `src/engine/bridge_graph.h`**
+
+```cpp
+#pragma once
+// Reconciles a Bridge model into running hubs and rows (design 6.4, 6.5). apply() may be
+// called with a whole new model; it diffs against what it holds. No master tick: publish()
+// is called by each SourceHub's adapter, and fan-out comes from the ref counts.
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+
+#include "core/bridge_model.h"
+#include "engine/output_row.h"
+#include "engine/source_hub.h"
+
+namespace ob {
+
+class BridgeGraph {
+ public:
+  using Deliver = OutputRow::Deliver;
+
+  explicit BridgeGraph(Deliver deliver);
+  BridgeGraph(const BridgeGraph&) = delete;
+  BridgeGraph& operator=(const BridgeGraph&) = delete;
+  ~BridgeGraph();
+
+  // Creates, updates and removes hubs and rows so they match `bridge`. Idempotent.
+  void apply(const Bridge& bridge);
+
+  void start();
+  void stop();
+
+  // Hands a frame to every row whose output reads this source.
+  void publish(const std::string& sourceId, std::shared_ptr<const Frame> frame);
+
+  SourceHub* hub(const std::string& sourceId) const;  // locks; for callers outside the graph
+  size_t hubCount() const;
+  size_t rowCount() const;
+  uint64_t offeredToRow(const std::string& outputId) const;
+
+ private:
+  // Caller holds mu_. apply() and publish() use these, never the locked public ones.
+  SourceHub* hubUnlocked(const std::string& sourceId) const;
+
+  struct Row {
+    std::unique_ptr<OutputRow> row;
+    uint64_t offered = 0;
+  };
+
+  mutable std::mutex mu_;
+  Deliver deliver_;
+  std::map<std::string, std::unique_ptr<SourceHub>> hubs_;
+  std::map<std::string, Row> rows_;  // by output id
+  bool started_ = false;
+};
+
+}  // namespace ob
+```
+
+- [ ] **Step 3: Write `src/engine/bridge_graph.cpp`**
+
+```cpp
+#include "engine/bridge_graph.h"
+
+#include <vector>
+
+namespace ob {
+
+BridgeGraph::BridgeGraph(Deliver deliver) : deliver_(std::move(deliver)) {}
+
+BridgeGraph::~BridgeGraph() { stop(); }
+
+void BridgeGraph::apply(const Bridge& bridge) {
+  std::lock_guard l(mu_);
+
+  for (const Source& s : bridge.sources) {
+    if (hubs_.find(s.id) == hubs_.end()) hubs_.emplace(s.id, std::make_unique<SourceHub>(s.id));
+  }
+  for (auto it = hubs_.begin(); it != hubs_.end();) {
+    if (bridge.findSource(it->first) == nullptr)
+      it = hubs_.erase(it);
+    else
+      ++it;
+  }
+
+  // Remove rows whose output is gone, and drop every hub ref first, so a re-apply is exact.
+  for (auto& [id, hub] : hubs_) {
+    while (hub->refs() > 0) hub->release();
+  }
+  for (auto it = rows_.begin(); it != rows_.end();) {
+    if (bridge.findOutput(it->first) == nullptr) {
+      it->second.row->stop();
+      it = rows_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  for (const Output& o : bridge.outputs) {
+    auto found = rows_.find(o.id);
+    if (found == rows_.end()) {
+      Row r;
+      r.row = std::make_unique<OutputRow>(o.id, o.sourceId, deliver_);
+      found = rows_.emplace(o.id, std::move(r)).first;
+    }
+    found->second.row->setSourceId(o.sourceId);
+    if (started_) found->second.row->start();
+    if (SourceHub* h = hubUnlocked(o.sourceId)) h->addRef();
+  }
+}
+
+void BridgeGraph::start() {
+  std::lock_guard l(mu_);
+  started_ = true;
+  for (auto& [id, r] : rows_) r.row->start();
+}
+
+void BridgeGraph::stop() {
+  std::lock_guard l(mu_);
+  started_ = false;
+  for (auto& [id, r] : rows_) r.row->stop();
+}
+
+void BridgeGraph::publish(const std::string& sourceId, std::shared_ptr<const Frame> frame) {
+  std::lock_guard l(mu_);
+  SourceHub* h = hubUnlocked(sourceId);
+  if (h == nullptr) return;
+  h->publish(frame);
+  for (auto& [id, r] : rows_) {
+    if (r.row->sourceId() == sourceId) {
+      r.row->offer(frame);
+      ++r.offered;
+    }
+  }
+}
+
+SourceHub* BridgeGraph::hubUnlocked(const std::string& sourceId) const {
+  const auto it = hubs_.find(sourceId);
+  return it == hubs_.end() ? nullptr : it->second.get();
+}
+
+SourceHub* BridgeGraph::hub(const std::string& sourceId) const {
+  std::lock_guard l(mu_);
+  return hubUnlocked(sourceId);
+}
+
+size_t BridgeGraph::hubCount() const {
+  std::lock_guard l(mu_);
+  return hubs_.size();
+}
+
+size_t BridgeGraph::rowCount() const {
+  std::lock_guard l(mu_);
+  return rows_.size();
+}
+
+uint64_t BridgeGraph::offeredToRow(const std::string& outputId) const {
+  std::lock_guard l(mu_);
+  const auto it = rows_.find(outputId);
+  return it == rows_.end() ? 0u : it->second.offered;
+}
+
+}  // namespace ob
+```
+
+> The public accessors all lock `mu_`; `apply()` and `publish()` call `hubUnlocked()` because they already hold it. Never call a public accessor from inside the lock — it would deadlock on a non-recursive `std::mutex`.
+
+- [ ] **Step 4: Add to `CMakeLists.txt` and run**
+
+Add `tests/bridge_graph_test.cpp` and `src/engine/bridge_graph.cpp`.
+
+Run:
+```powershell
+cmake --build --preset release; .\build\release\ob_tests.exe
+```
+Expected: SUCCESS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/engine/bridge_graph.h src/engine/bridge_graph.cpp tests/bridge_graph_test.cpp CMakeLists.txt
+git commit -m "feat(engine): BridgeGraph reconciles the model"
+```
+
+---
+
+## Task 13: Control server and command router
+
+**Files:**
+- Create: `src/engine/control_server.h`, `src/engine/control_server.cpp`, `src/engine/command_router.h`, `src/engine/command_router.cpp`, `tests/command_router_test.cpp`
+- Test: `tests/command_router_test.cpp`
+
+- [ ] **Step 1: Lift the control server**
+
+Run:
+```powershell
+Copy-Item ..\BreadCamera\src\engine\control_server.h  src\engine\control_server.h
+Copy-Item ..\BreadCamera\src\engine\control_server.cpp src\engine\control_server.cpp
+(Get-Content src\engine\control_server.h)  -replace '\bbc\b','ob' | Set-Content src\engine\control_server.h
+(Get-Content src\engine\control_server.cpp) -replace '\bbc\b','ob' | Set-Content src\engine\control_server.cpp
+```
+Expected: it brings `tokenMatches`, `tokenFromUri`, `randomToken`, and a `ControlServer` with `send`, `sendBinary`, `broadcast` and a `Handlers` struct. Keep all of it — the token check is the security boundary (spec 6.1).
+
+- [ ] **Step 2: Write the failing test `tests/command_router_test.cpp`**
+
+```cpp
+#include <doctest/doctest.h>
+
+#include "engine/command_router.h"
+
+TEST_CASE("an unknown command is refused with a named error") {
+  ob::CommandRouter router;
+  const auto reply = router.handle(ob::ClientId{"c1"}, R"({"cmd":"nope"})");
+  CHECK(reply.find("\"ok\":false") != std::string::npos);
+  CHECK(reply.find("unknown command") != std::string::npos);
+}
+
+TEST_CASE("input that is not JSON is refused, not crashed on") {
+  ob::CommandRouter router;
+  const auto reply = router.handle(ob::ClientId{"c1"}, "not json at all");
+  CHECK(reply.find("\"ok\":false") != std::string::npos);
+}
+
+TEST_CASE("add-source rejects an address that is not text") {
+  ob::CommandRouter router;
+  const auto reply = router.handle(ob::ClientId{"c1"},
+                                   R"({"cmd":"add-source","kind":"Omt","address":42})");
+  CHECK(reply.find("\"ok\":false") != std::string::npos);
+  CHECK(reply.find("address") != std::string::npos);
+}
+
+TEST_CASE("add-source rejects an unknown kind") {
+  ob::CommandRouter router;
+  const auto reply = router.handle(ob::ClientId{"c1"},
+                                   R"({"cmd":"add-source","kind":"Telepathy","address":"x"})");
+  CHECK(reply.find("\"ok\":false") != std::string::npos);
+  CHECK(reply.find("kind") != std::string::npos);
+}
+
+TEST_CASE("a valid add-source returns ok and the new id") {
+  ob::CommandRouter router;
+  const auto reply = router.handle(ob::ClientId{"c1"},
+                                   R"({"cmd":"add-source","kind":"Ndi","address":"CAM 1"})");
+  CHECK(reply.find("\"ok\":true") != std::string::npos);
+  CHECK(reply.find("\"id\"") != std::string::npos);
+}
+
+TEST_CASE("state reports the model") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"Ndi","address":"CAM 1"})");
+  const auto reply = router.handle(ob::ClientId{"c1"}, R"({"cmd":"state"})");
+  CHECK(reply.find("\"ok\":true") != std::string::npos);
+  CHECK(reply.find("CAM 1") != std::string::npos);
+}
+```
+
+- [ ] **Step 3: Write `src/engine/command_router.h`**
+
+```cpp
+#pragma once
+// Validates the JSON commands the UI sends over the control channel and answers each with a
+// JSON string (design 6.1). Validation failures are named and inline; the router never
+// throws to its caller.
+#include <string>
+
+#include "core/bridge_model.h"
+#include "engine/control_server.h"
+
+namespace ob {
+
+class CommandRouter {
+ public:
+  // Wholly synchronous: no engine threads, so the tests can call it directly.
+  std::string handle(const ClientId& client, const std::string& text);
+
+  const Bridge& bridge() const { return bridge_; }
+  void setBridge(Bridge b) { bridge_ = std::move(b); }
+
+ private:
+  Bridge bridge_;
+  uint64_t nextId_ = 1;
+};
+
+}  // namespace ob
+```
+
+- [ ] **Step 4: Write `src/engine/command_router.cpp`**
+
+```cpp
+#include "engine/command_router.h"
+
+#include <algorithm>
+#include <optional>
+
+#include <nlohmann/json.hpp>
+
+using nlohmann::json;
+
+namespace ob {
+namespace {
+
+std::string refuse(const std::string& message) {
+  return json{{"ok", false}, {"error", message}}.dump();
+}
+
+// The UI can only reorder rows and pick targets; an unknown string is an error, not a default.
+std::optional<SourceKind> parseKind(const std::string& s) {
+  if (s == "Omt") return SourceKind::Omt;
+  if (s == "OmtHx") return SourceKind::OmtHx;
+  if (s == "Ndi") return SourceKind::Ndi;
+  return std::nullopt;
+}
+
+}  // namespace
+
+std::string CommandRouter::handle(const ClientId&, const std::string& text) {
+  json j;
+  try {
+    j = json::parse(text);
+  } catch (const json::exception&) {
+    return refuse("input is not JSON");
+  }
+  if (!j.is_object() || !j.contains("cmd") || !j["cmd"].is_string())
+    return refuse("every command needs a text \"cmd\"");
+
+  const std::string cmd = j["cmd"];
+
+  if (cmd == "state") {
+    json sources = json::array();
+    for (const Source& s : bridge_.sources)
+      sources.push_back({{"id", s.id}, {"kind", std::string(toString(s.kind))}, {"address", s.address}});
+    json outputs = json::array();
+    for (const Output& o : bridge_.outputs)
+      outputs.push_back({{"id", o.id},
+                         {"sourceId", o.sourceId},
+                         {"target", std::string(toString(o.target))},
+                         {"name", o.name},
+                         {"advertised", bridge_.advertisedName(o)}});
+    return json{{"ok", true}, {"name", bridge_.name}, {"sources", sources}, {"outputs", outputs}}.dump();
+  }
+
+  if (cmd == "add-source") {
+    if (!j.contains("address") || !j["address"].is_string())
+      return refuse("add-source needs a text \"address\"");
+    if (!j.contains("kind") || !j["kind"].is_string())
+      return refuse("add-source needs a text \"kind\"");
+    const auto kind = parseKind(j["kind"]);
+    if (!kind) return refuse("add-source: unknown \"kind\": " + j["kind"].get<std::string>());
+
+    Source s;
+    s.id = "s" + std::to_string(nextId_++);
+    s.kind = *kind;
+    s.address = j["address"];
+    bridge_.sources.push_back(std::move(s));
+    return json{{"ok", true}, {"id", bridge_.sources.back().id}}.dump();
+  }
+
+  if (cmd == "remove-source") {
+    if (!j.contains("id") || !j["id"].is_string()) return refuse("remove-source needs a text \"id\"");
+    const std::string id = j["id"];
+    if (bridge_.findSource(id) == nullptr) return refuse("remove-source: no such source: " + id);
+    for (Output& o : bridge_.outputs)
+      if (o.sourceId == id) o.sourceId.clear();
+    bridge_.sources.erase(
+        std::remove_if(bridge_.sources.begin(), bridge_.sources.end(),
+                       [&](const Source& s) { return s.id == id; }),
+        bridge_.sources.end());
+    return json{{"ok", true}}.dump();
+  }
+
+  if (cmd == "add-output") {
+    Output o;
+    o.id = "o" + std::to_string(nextId_++);
+    o.sourceId = j.value("sourceId", std::string{});
+    o.name = j.value("name", std::string{"Output " + o.id});
+    bridge_.outputs.push_back(std::move(o));
+    return json{{"ok", true}, {"id", bridge_.outputs.back().id}}.dump();
+  }
+
+  if (cmd == "set-output-source") {
+    if (!j.contains("id") || !j["id"].is_string()) return refuse("set-output-source needs a text \"id\"");
+    Output* o = bridge_.findOutput(j["id"]);
+    if (o == nullptr) return refuse("set-output-source: no such output: " + j["id"].get<std::string>());
+    const std::string sid = j.value("sourceId", std::string{});
+    if (!sid.empty() && bridge_.findSource(sid) == nullptr)
+      return refuse("set-output-source: no such source: " + sid);
+    o->sourceId = sid;
+    return json{{"ok", true}}.dump();
+  }
+
+  return refuse("unknown command: " + cmd);
+}
+
+}  // namespace ob
+```
+
+- [ ] **Step 5: Add to `CMakeLists.txt` and run**
+
+Add `tests/command_router_test.cpp`, `src/engine/command_router.cpp` and `src/engine/control_server.cpp`.
+
+Run:
+```powershell
+cmake --build --preset release; .\build\release\ob_tests.exe
+```
+Expected: SUCCESS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/engine/control_server.h src/engine/control_server.cpp src/engine/command_router.h src/engine/command_router.cpp tests/command_router_test.cpp CMakeLists.txt
+git commit -m "feat(engine): control server and command router"
+```
+
+---
+
+## Task 14: Supervisor and process launcher
+
+**Files:**
+- Create: `src/shell/supervisor.h`, `src/shell/supervisor.cpp`, `src/shell/process_launcher.h`, `src/shell/process_launcher.cpp`, `tests/supervisor_test.cpp`
+
+- [ ] **Step 1: Lift both pairs from BreadCamera**
+
+Run:
+```powershell
+Copy-Item ..\BreadCamera\src\shell\supervisor.h src\shell\supervisor.h
+Copy-Item ..\BreadCamera\src\shell\supervisor.cpp src\shell\supervisor.cpp
+Copy-Item ..\BreadCamera\src\shell\process_launcher.h src\shell\process_launcher.h
+Copy-Item ..\BreadCamera\src\shell\process_launcher.cpp src\shell\process_launcher.cpp
+Get-ChildItem src\shell\*.h, src\shell\*.cpp | ForEach-Object {
+  (Get-Content $_) -replace '\bbc\b','ob' | Set-Content $_
+}
+```
+
+- [ ] **Step 2: Write the failing test `tests/supervisor_test.cpp`**
+
+```cpp
+#include <doctest/doctest.h>
+
+#include "shell/supervisor.h"
+
+using Clock = ob::Supervisor::Clock;
+
+struct FakeLauncher : ob::EngineLauncher {
+  bool running = false;
+  int launched = 0, killed = 0;
+  bool isRunning() override { return running; }
+  void launch() override { ++launched; running = true; }
+  void kill() override { ++killed; running = false; }
+};
+
+TEST_CASE("the supervisor restarts a dead engine after its grace period") {
+  FakeLauncher l;
+  ob::Supervisor sup(l);
+  const auto t0 = Clock::now();
+
+  sup.poll(t0);                 // not running: schedules a launch
+  CHECK(l.launched == 1);
+
+  l.running = false;            // engine died
+  sup.poll(t0 + std::chrono::seconds(1));
+  CHECK(l.launched == 1);       // inside the startup grace: no second launch yet
+}
+
+TEST_CASE("a heartbeat resets the restart budget") {
+  FakeLauncher l;
+  ob::Supervisor sup(l);
+  const auto t0 = Clock::now();
+  sup.heartbeat(t0);
+  sup.poll(t0 + std::chrono::milliseconds(100));
+  CHECK(sup.launches() <= 1);
+  CHECK_FALSE(sup.crashLooping(t0 + std::chrono::milliseconds(100)));
+}
+```
+
+- [ ] **Step 3: Add `ob_shell` to `CMakeLists.txt` and run**
+
+```cmake
+# ---- shell ----
+add_library(ob_shell STATIC src/shell/supervisor.cpp src/shell/process_launcher.cpp)
+target_include_directories(ob_shell PUBLIC src)
+target_link_libraries(ob_shell PUBLIC ob_core)
+```
+
+Add `tests/supervisor_test.cpp` and link `ob_shell` into `ob_tests`.
+
+Run:
+```powershell
+cmake --build --preset release; .\build\release\ob_tests.exe
+```
+Expected: SUCCESS. If BreadCamera's `Supervisor` API differs from the test (its own test is `tests/supervisor_test.cpp`), adapt the test to the lifted API rather than the lifted API to the test.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/shell CMakeLists.txt tests/supervisor_test.cpp
+git commit -m "feat(shell): supervisor and process launcher, lifted from BreadCamera"
+```
+
+---
+
+## Task 15: Engine main, and the UI-close guarantee
+
+**Files:**
+- Create: `src/engine/engine.h`, `src/engine/engine.cpp`, `tests/engine_test.cpp`
+- Modify: `src/engine/engine_main.cpp`
+
+- [ ] **Step 1: Write the failing test `tests/engine_test.cpp`**
+
+```cpp
+#include <doctest/doctest.h>
+
+#include <chrono>
+#include <thread>
+
+#include "engine/engine.h"
+
+using namespace std::chrono_literals;
+
+static ob::Bridge twoOutputsOneSource() {
+  ob::Bridge b;
+  b.name = "Test";
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::OmtHx, .name = "B"});
+  return b;
+}
+
+TEST_CASE("applying a bridge starts rows and refs the hub") {
+  ob::Engine engine(0, "token");  // port 0: do not bind, tests drive apply() directly
+  engine.apply(twoOutputsOneSource());
+  REQUIRE(engine.graph().hub("s1") != nullptr);
+  CHECK(engine.graph().hub("s1")->refs() == 2);
+  CHECK(engine.graph().rowCount() == 2u);
+}
+
+TEST_CASE("outputs survive a control-channel disconnect (the UI-close guarantee)") {
+  ob::Engine engine(0, "token");
+  engine.apply(twoOutputsOneSource());
+  engine.start();
+
+  const uint64_t before = engine.graph().hub("s1")->framesPublished();
+  engine.onControlClientDisconnected(ob::ClientId{"c1"});
+  std::this_thread::sleep_for(10ms);
+  const uint64_t after = engine.graph().hub("s1")->framesPublished();
+
+  CHECK(after == before);  // a disconnect never tears the graph down
+  CHECK(engine.graph().rowCount() == 2u);
+  engine.stop();
+}
+```
+
+- [ ] **Step 2: Write `src/engine/engine.h`**
+
+```cpp
+#pragma once
+// The headless engine (design 6.1, 6.6): owns the graph, the bridge file and the control
+// server. Closing the UI drops a control connection; it must never touch the graph.
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include "core/bridge_model.h"
+#include "engine/bridge_graph.h"
+#include "engine/command_router.h"
+#include "engine/control_server.h"
+
+namespace ob {
+
+class Engine {
+ public:
+  Engine(int controlPort, std::string token, std::string bridgeFile = {});
+  ~Engine();
+  Engine(const Engine&) = delete;
+  Engine& operator=(const Engine&) = delete;
+
+  // Builds the graph from the model. Safe to call repeatedly.
+  void apply(const Bridge& bridge);
+
+  void start();
+  void stop();
+
+  BridgeGraph& graph() { return graph_; }
+
+  // Called when a UI disconnects. Deliberately does not stop the graph (design 6.1, 1.1).
+  void onControlClientDisconnected(const ClientId& client);
+
+  uint64_t controlConnections() const { return controlConnections_; }
+
+ private:
+  std::string handleCommand(const ClientId& client, const std::string& text);
+
+  int controlPort_;
+  std::string token_;
+  std::string bridgeFile_;
+  CommandRouter router_;
+  BridgeGraph graph_{[](const std::shared_ptr<const Frame>&) {}};
+  std::unique_ptr<ControlServer> server_;
+  std::atomic<uint64_t> controlConnections_{0};
+};
+
+}  // namespace ob
+```
+
+- [ ] **Step 3: Write `src/engine/engine.cpp`**
+
+```cpp
+#include "engine/engine.h"
+
+#include <utility>
+
+#include "core/bridge_store.h"
+
+namespace ob {
+
+Engine::Engine(int controlPort, std::string token, std::string bridgeFile)
+    : controlPort_(controlPort), token_(std::move(token)), bridgeFile_(std::move(bridgeFile)) {}
+
+Engine::~Engine() { stop(); }
+
+void Engine::apply(const Bridge& bridge) {
+  router_.setBridge(bridge);
+  graph_.apply(bridge);
+}
+
+void Engine::start() {
+  graph_.start();
+  if (controlPort_ > 0 && server_ == nullptr) {
+    server_ = std::make_unique<ControlServer>(controlPort_, token_);
+    ControlServer::Handlers h;
+    h.open = [this](const ClientId& c) {
+      ++controlConnections_;
+      if (server_) server_->send(c, handleCommand(c, R"({"cmd":"state"})"));
+    };
+    h.close = [this](const ClientId& c) { onControlClientDisconnected(c); };
+    h.text = [this](const ClientId& c, const std::string& t) { return handleCommand(c, t); };
+    server_->setHandlers(std::move(h));
+    server_->start();
+  }
+}
+
+void Engine::stop() {
+  if (server_) {
+    server_->stop();
+    server_.reset();
+  }
+  graph_.stop();
+}
+
+void Engine::onControlClientDisconnected(const ClientId&) {
+  // The graph is owned by the engine, not by a connection. Nothing to do, by design.
+}
+
+std::string Engine::handleCommand(const ClientId& client, const std::string& text) {
+  return router_.handle(client, text);
+}
+
+}  // namespace ob
+```
+
+- [ ] **Step 4: Replace `src/engine/engine_main.cpp`**
+
+```cpp
+// OMT-Bridge-Engine.exe: headless. Owns the sources, outputs and bridge graph; keeps them
+// running when the UI is closed (design 6.1).
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+
+#include "core/bridge_store.h"
+#include "engine/engine.h"
+
+namespace {
+
+std::string randomTokenHex() {
+  // Loopback + a random token is the security boundary (design 6.1, BreadCamera's ControlServer).
+  unsigned char buf[32];
+  for (size_t i = 0; i < sizeof(buf); ++i) buf[i] = static_cast<unsigned char>(std::rand() & 0xFF);
+  static const char* hex = "0123456789abcdef";
+  std::string out;
+  out.reserve(sizeof(buf) * 2);
+  for (unsigned char b : buf) {
+    out.push_back(hex[b >> 4]);
+    out.push_back(hex[b & 0xF]);
+  }
+  return out;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  int port = 0;
+  std::string token, bridgeFile;
+  for (int i = 1; i + 1 < argc; i += 2) {
+    const std::string k = argv[i];
+    if (k == "--port") port = std::atoi(argv[i + 1]);
+    else if (k == "--token") token = argv[i + 1];
+    else if (k == "--bridge") bridgeFile = argv[i + 1];
+  }
+  if (port == 0) {
+    std::fprintf(stderr, "usage: omt-bridge-engine --port <n> [--token <s>] [--bridge <file>]\n");
+    return 2;
+  }
+  if (token.empty()) token = randomTokenHex();
+
+  ob::Engine engine(port, token, bridgeFile);
+
+  if (!bridgeFile.empty()) {
+    if (auto b = ob::loadBridge(bridgeFile)) {
+      engine.apply(*b);
+    } else {
+      std::fprintf(stderr, "warning: could not read %s; starting with an empty bridge\n",
+                   bridgeFile.c_str());
+    }
+  }
+
+  engine.start();
+
+  // Report readiness on stdout, then run until told to stop. The UI reads the first line.
+  std::printf("READY %s\n", token.c_str());
+  std::fflush(stdout);
+
+  std::string line;
+  while (std::getline(std::cin, line)) {
+    if (line == "quit") break;
+  }
+
+  engine.stop();
+  return 0;
+}
+```
+
+- [ ] **Step 5: Add `ob_engine`'s engine sources, build and run**
+
+Add `tests/engine_test.cpp`, `src/engine/engine.cpp` to the build (`engine_main.cpp` already builds `omt-bridge-engine`).
+
+Run:
+```powershell
+cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
+```
+Expected: SUCCESS, including `outputs survive a control-channel disconnect`.
+
+- [ ] **Step 6: Prove the two processes talk**
+
+Run in one shell:
+```powershell
+.\build\release\omt-bridge-engine.exe --port 5990 --token deadbeef --bridge build\release\test.ombridge.json
+```
+Expected: `READY deadbeef`.
+
+In another shell run a WebSocket client against `ws://127.0.0.1:5990/?token=deadbeef` and send `{"cmd":"state"}`.
+Expected: a JSON reply containing `"ok":true`. Sending with a wrong token gets no reply / a rejected connection.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/engine/engine.h src/engine/engine.cpp src/engine/engine_main.cpp tests/engine_test.cpp CMakeLists.txt
+git commit -m "feat(engine): headless engine, bridge load, and the UI-close guarantee"
+```
+
+**M1 is complete when:** `ob_tests.exe` passes all tasks' tests, and `omt-bridge-engine.exe` answers `{"cmd":"state"}` over the token-authenticated loopback channel while its graph keeps running after a client disconnects.
+
+---
+
+## What this plan does not cover
+
+M2 (OMT/OMT-HX in and out), M3 (NDI), M4 (the Qt UI proper) and M5 (hardening) each get their own plan. In this plan the `OutputRow` sink is a `std::function` and `SourceHub::publish` is driven by tests; M2 replaces both with the real `OmtSource`/`OmtSink` adapters from the spec's Section 8.
