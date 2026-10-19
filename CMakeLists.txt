@@ -60,6 +60,7 @@ target_link_libraries(ob_core PUBLIC nlohmann_json::nlohmann_json)
 # ---- engine ----
 add_library(ob_engine STATIC
   src/engine/source_hub.cpp   # Tasks 11-15 append output_row, bridge_graph, command_router, control_server, engine
+  src/engine/output_row.cpp
 )
 target_include_directories(ob_engine PUBLIC src)
 target_link_libraries(ob_engine PUBLIC ob_core ixwebsocket::ixwebsocket)
@@ -76,6 +77,7 @@ add_executable(ob_tests
   tests/bridge_model_test.cpp
   tests/bridge_store_test.cpp
   tests/source_hub_test.cpp
+  tests/output_row_test.cpp
 )
 target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
