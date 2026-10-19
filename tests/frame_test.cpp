@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "core/frame.h"
+#include "omthx/omthx.h"
 
 TEST_CASE("a frame reports its plane sizes") {
   ob::Frame f;
@@ -45,4 +46,9 @@ TEST_CASE("valid() accepts an alpha frame and rejects a degenerate height") {
   f.format = ob::VideoFormat{4, 1, 60, 1, false};
   f.uyvy.assign(f.lumaBytes(), 0x10);
   CHECK_FALSE(f.valid());
+}
+
+TEST_CASE("the linked omthx is the UYVY build") {
+  // sendVideoUyvy and PixelFormat::Coded only exist at OMT-HX ae96aa1 or later (spec 6.3, 18.8).
+  static_assert(static_cast<int>(omthx::PixelFormat::Coded) >= 0);
 }
