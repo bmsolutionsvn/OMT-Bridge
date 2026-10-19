@@ -2012,6 +2012,8 @@ class OutputRow {
   OutputRow(const OutputRow&) = delete;
   OutputRow& operator=(const OutputRow&) = delete;
 
+  // Lifecycle and setSourceId have a single writer: BridgeGraph serialises every row call under
+  // its own mutex. Two threads calling start() at once could assign over a live std::thread.
   void start();
   void stop();
 
@@ -2065,6 +2067,9 @@ OutputRow::~OutputRow() { stop(); }
 
 void OutputRow::start() {
   if (thread_.joinable()) return;
+  // A deliberate restart retries: clear a previous fault, or a row that now works would still be
+  // reported Offline by the engine. `delivered_` is NOT reset — it is a cumulative stat.
+  faulted_.store(false);
   // A row can be started again after stop() ("Stop all outputs", then resume): stop() closed the
   // queue, so reopen it before the worker starts — otherwise its first pop returns nullopt, sees
   // `closed()`, and the worker exits immediately, delivering nothing.
@@ -2295,7 +2300,8 @@ void BridgeGraph::apply(const Bridge& bridge) {
   // because SourceHub::addRef()/release() fire the running callback SYNCHRONOUSLY, and that
   // callback starts or stops an input adapter — which may publish back into this graph. Firing it
   // while mu_ is held would stall on, or self-deadlock with, a non-recursive mutex.
-  std::map<std::string, int> wanted;  // sourceId -> reference count the new model implies
+  std::map<std::string, int> wanted;                // sourceId -> refs the new model implies
+  std::vector<std::unique_ptr<OutputRow>> retired;  // destroyed after mu_ is released
   {
     std::lock_guard l(mu_);
 
@@ -2310,10 +2316,13 @@ void BridgeGraph::apply(const Bridge& bridge) {
     }
 
     // Remove rows whose output is gone. Every surviving hub starts from zero demand, so a
-    // re-apply is exact and a hub left with no outputs is released to idle.
+    // re-apply is exact and a hub left with no outputs is released to idle. Retired rows are moved
+    // out here and destroyed AFTER mu_ is released: OutputRow's destructor joins its worker, which
+    // may be inside deliver_, and holding mu_ across that join would stall publish() for every
+    // other row (design 6.5: one slow sink must not block the others).
     for (auto it = rows_.begin(); it != rows_.end();) {
       if (bridge.findOutput(it->first) == nullptr) {
-        it->second.row->stop();
+        retired.push_back(std::move(it->second.row));
         it = rows_.erase(it);
       } else {
         ++it;
@@ -2333,6 +2342,7 @@ void BridgeGraph::apply(const Bridge& bridge) {
       if (hubUnlocked(o.sourceId) != nullptr) ++wanted[o.sourceId];
     }
   }
+  retired.clear();  // joins each retired row's worker with mu_ released
 
   // Phase 2, with mu_ released: bring each hub to exactly the demand the model implies.
   for (auto& [id, want] : wanted) {
@@ -2344,15 +2354,24 @@ void BridgeGraph::apply(const Bridge& bridge) {
 }
 
 void BridgeGraph::start() {
-  std::lock_guard l(mu_);
-  started_ = true;
-  for (auto& [id, r] : rows_) r.row->start();
+  std::vector<OutputRow*> rows;
+  {
+    std::lock_guard l(mu_);
+    started_ = true;
+    for (auto& [id, r] : rows_) rows.push_back(r.row.get());
+  }
+  for (OutputRow* r : rows) r->start();  // outside mu_: start() spawns a worker
 }
 
 void BridgeGraph::stop() {
-  std::lock_guard l(mu_);
-  started_ = false;
-  for (auto& [id, r] : rows_) r.row->stop();
+  std::vector<OutputRow*> rows;
+  {
+    std::lock_guard l(mu_);
+    started_ = false;
+    for (auto& [id, r] : rows_) rows.push_back(r.row.get());
+  }
+  // Join outside mu_: a worker that is inside deliver_ must not hold the lock publish() needs.
+  for (OutputRow* r : rows) r->stop();
 }
 
 void BridgeGraph::publish(const std::string& sourceId, std::shared_ptr<const Frame> frame) {
