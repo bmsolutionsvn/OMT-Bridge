@@ -1,5 +1,8 @@
 #include <doctest/doctest.h>
 
+#include <atomic>
+#include <thread>
+
 #include "core/bounded_queue.h"
 
 using namespace std::chrono_literals;
@@ -26,4 +29,34 @@ TEST_CASE("close unblocks a waiting pop and reopen resumes") {
   CHECK_FALSE(q.closed());
   CHECK_FALSE(q.push(1));
   CHECK(q.pop(0ms) == 1);
+}
+
+// The case above proves the *state*, not the *wakeup*: it closes before it pops, so nothing
+// is ever parked. OutputRow::stop() (Task 11) relies on close() releasing a worker already
+// blocked inside pop(), so that interleaving needs its own case with a real thread.
+TEST_CASE("close releases a thread parked in pop") {
+  ob::BoundedQueue<int> q(2);
+  std::atomic<bool> returned = false;
+  std::optional<int> got;
+  std::thread t([&] {
+    got = q.pop(5000ms);
+    returned = true;
+  });
+  std::this_thread::sleep_for(50ms);
+  CHECK_FALSE(returned.load());  // still parked: nothing pushed and not yet closed
+  q.close();
+  t.join();  // returns promptly only because close() woke the parked pop
+  CHECK(returned.load());
+  CHECK_FALSE(got.has_value());
+  CHECK(q.closed());
+}
+
+TEST_CASE("push wakes a thread parked in pop") {
+  ob::BoundedQueue<int> q(2);
+  std::optional<int> got;
+  std::thread t([&] { got = q.pop(5000ms); });
+  std::this_thread::sleep_for(20ms);
+  CHECK_FALSE(q.push(7));
+  t.join();
+  CHECK(got == 7);
 }

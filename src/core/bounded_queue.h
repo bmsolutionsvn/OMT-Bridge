@@ -1,4 +1,5 @@
 #pragma once
+#include <cassert>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -12,7 +13,9 @@ namespace ob {
 template <class T>
 class BoundedQueue {
  public:
-  explicit BoundedQueue(size_t capacity) : capacity_(capacity) {}
+  explicit BoundedQueue(size_t capacity) : capacity_(capacity) {
+    assert(capacity >= 1);
+  }
 
   bool push(T v) {
     bool dropped = false;
