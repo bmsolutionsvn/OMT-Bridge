@@ -753,7 +753,14 @@ TEST_CASE("an absent error serialises to JSON null and a present one to an objec
 
 - [ ] **Step 4: Create the `ob_core` library and wire the test into CMake**
 
-Task 2 left `ob_core` uncreated (its comment said "created in Task 6" — this is that moment; `frame.h` was header-only, so nothing linked). Add the library just above the `# ---- tests ----` marker, *replacing that stale comment*:
+Task 2 left `ob_core` uncreated (its comment said "created in Task 6" — this is that moment; `frame.h` was header-only, so nothing linked). Two edits:
+
+First, `nlohmann_json::nlohmann_json` is an IMPORTED target that does not exist until it is found. Listing `nlohmann-json` in `vcpkg.json` installs the port but defines nothing, so add this line beside the existing `find_package(doctest CONFIG REQUIRED)`:
+```cmake
+find_package(nlohmann_json CONFIG REQUIRED)
+```
+
+Second, add the library just above the `# ---- tests ----` marker, *replacing that stale comment*:
 
 ```cmake
 # ---- core ----
