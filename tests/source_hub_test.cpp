@@ -61,7 +61,7 @@ TEST_CASE("a transparent alpha plane is kept and the stored frame stays valid") 
   ob::SourceHub hub("s1");
   auto f = std::make_shared<ob::Frame>();
   f->format = ob::VideoFormat{4, 2, 60, 1, true};
-  f->uyvy.assign(f->lumaBytes() + f->alphaBytes(), 0x10);
+  f->uyvy.assign(f->lumaBytes() + f->alphaBytes(), 0xFF);
   f->premultiplied = true;
   f->uyvy[f->alphaOffset() + 1] = 128;  // one transparent pixel keeps alpha on
   hub.storeFrame(f);
