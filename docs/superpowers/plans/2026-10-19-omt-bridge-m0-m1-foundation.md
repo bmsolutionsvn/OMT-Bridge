@@ -3267,6 +3267,18 @@ Two smaller M2 items: `Supervisor::poll` holds its mutex across the virtual `lau
 
 Two tests to add in M2 alongside those: a discovery round trip for OMT-Bridge's own schema, and `stopSupervising()` halting relaunches.
 
+### M2-gating API work (from the final branch review)
+
+These are not M1 defects — nothing in M1 can reach them — but each is far cheaper to change before the first adapter exists than after. Land them with M2's first adapter:
+
+1. **There is no way to install `onRunningChanged` before a hub's first transition.** `apply()` creates the hub and moves its demand in the same call, so the "install before the first demand change" contract is unsatisfiable for hubs `apply` creates; and because demand moves by delta, a later `apply` fires nothing. Also `BridgeGraph::stop()`, and `engine_main`'s `apply()`-before-`start()` order, mean an M2 adapter started by that callback could run before the graph/server are up and could survive `Engine::stop()`. Fix: a hub-created hook (or a factory in the `BridgeGraph` ctor), gate phase-2 transitions on `started_`, and have `stop()` release the refs it added and `start()` re-add them.
+2. **A row cannot revive after a sink fault, and nothing reads the fault.** `OutputRow::start()` early-returns while `thread_.joinable()`, which is still true after the worker exited on a fault — so `apply()`'s `row->start()` silently does nothing, and `faulted()` has no reader outside tests, so the promised "mark that output Offline" is unimplemented. Fix a health/restart path, but do not restart on every `apply()` — `state` calls `apply()`, so that would restart a faulted row on every query.
+3. **The per-output sink cannot be built from the current shape.** `BridgeGraph` takes one shared `Deliver` with no output identity, rows carry only `id`/`sourceId`, and `apply()` copies only `sourceId` — `target`/`codec`/`quality`/`alpha`/`name` never reach a row and the config `operator==` is never used to diff. M2 needs a per-output factory and a config diff.
+4. **Two functions named `publish`, and a raw hub pointer with a short life.** `SourceHub::publish` only stores the slot; fan-out lives in `BridgeGraph::publish`. An adapter calling `hub->publish(frame)` sees `framesPublished()` climb and no output ever receives a frame. Worse, `BridgeGraph::hub()` returns a pointer into a map that `apply()` erases, so a cached `SourceHub*` is a use-after-free at the next source edit. Make `SourceHub::publish` private (or rename it `storeFrame`) and have adapters publish by source id through the graph.
+5. **Runtime state has no path into the `state` reply.** The router reports only its own config model; `Source::state`/`format` and `Output::state` are written nowhere. The graph owns liveness, the router owns the model, and nothing connects them — so no signal state, format, stats or thumbnail can be reported until one does.
+
+Cheap follow-ups also worth taking early: check the stream after `close()` in `saveBridge` and remove the `.tmp` on a rename failure; take `controlMu_` in `Engine::apply` (M4 will load a bridge at runtime); unit-test `tokenMatches`/`tokenFromUri`/`randomToken` (the only guard on the control channel) and make the token length floor consistent; reject duplicate ids in a hand-edited bridge file; bound `ControlServer::send`'s send timeout when a UI exists.
+
 ---
 
 ## What this plan does not cover
