@@ -2418,15 +2418,15 @@ uint64_t BridgeGraph::offeredToRow(const std::string& outputId) const {
 
 > The public accessors all lock `mu_`; `apply()` and `publish()` call `hubUnlocked()` because they already hold it. Never call a public accessor from inside the lock — it would deadlock on a non-recursive `std::mutex`.
 
-- [ ] **Step 4: Add to `CMakeLists.txt` and run**
+- [ ] **Step 4: Wire into `CMakeLists.txt` and run**
 
-Add `tests/bridge_graph_test.cpp` and `src/engine/bridge_graph.cpp`.
+Two changes: add `src/engine/bridge_graph.cpp` to the **`ob_engine`** source list, and `tests/bridge_graph_test.cpp` to `ob_tests` (`ob_tests` already links `ob_engine`, so no extra link line).
 
 Run:
 ```powershell
-cmake --build --preset release; .\build\release\ob_tests.exe
+cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: SUCCESS.
+Expected: `[doctest] Status: SUCCESS!` — the five new cases pass alongside the existing thirty-four.
 
 - [ ] **Step 5: Commit**
 
