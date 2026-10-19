@@ -62,6 +62,8 @@ add_library(ob_engine STATIC
   src/engine/source_hub.cpp   # Tasks 11-15 append output_row, bridge_graph, command_router, control_server, engine
   src/engine/output_row.cpp
   src/engine/bridge_graph.cpp
+  src/engine/control_server.cpp
+  src/engine/command_router.cpp
 )
 target_include_directories(ob_engine PUBLIC src)
 target_link_libraries(ob_engine PUBLIC ob_core ixwebsocket::ixwebsocket)
@@ -80,6 +82,7 @@ add_executable(ob_tests
   tests/source_hub_test.cpp
   tests/output_row_test.cpp
   tests/bridge_graph_test.cpp
+  tests/command_router_test.cpp
 )
 target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
