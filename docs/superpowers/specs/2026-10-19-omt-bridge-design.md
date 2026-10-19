@@ -599,8 +599,8 @@ library rather than with itself:
   **Measured, M2 (2026-10-20).** `scripts/m2-e2e.ps1` on the test PC (AMD Ryzen 7 5700X,
   8C/16T; Radeon RX 6600 via AMF; Windows 11 Pro; OMT-HX `ae96aa1`) sent 1920x1080p60
   alpha through `omthx-send` -> engine -> `omthx-recv`, one OMT-HX output, for 12 s.
-  Across two runs the engine used **17.2-18.1 s of CPU over 12.11 s wall (1.42-1.49
-  cores), or 23.7-24.9 ms of CPU per output frame at 60 fps**. That is the whole bridge
+  Across four runs the engine used **16.3-18.1 s of CPU over 12.1 s wall (1.35-1.49
+  cores), or 22.5-24.9 ms of CPU per output frame at 60 fps**. That is the whole bridge
   cost for one output -- source decode, the UYVY copy and encode -- not an encode-only
   figure. A per-output CPU split needs a profiler and is not measured; the 2- and
   4-output points and a non-alpha baseline are also unmeasured, with alpha being the
@@ -616,8 +616,8 @@ library rather than with itself:
   on the bridge's UYVY path.
 
   **Measured, M2 (same 1-output runs).** The bridge held real time at 1080p60 alpha:
-  `omthx-recv` reported 58-62 fps after the first (keyframe-wait) second, 56.8-57.4 fps
-  averaged over all 12 s, at **31.53-31.80 Mbps** on the wire. Receiver decode measured
+  `omthx-recv` reported 56-62 fps after the first (keyframe-wait) second, 56.8-57.5 fps
+  averaged over all 12 s, at **30.4-32.9 Mbps** per second and **31.5-32.0 Mbps** averaged on the wire. Receiver decode measured
   12.5-19.2 ms per frame. End-to-end delay, from the sender's timestamp to the receiver's
   clock across both HX hops, moved between **59 and 195 ms average per second, with
   per-second maxima up to 202 ms**; it did not settle at one value and both runs ended

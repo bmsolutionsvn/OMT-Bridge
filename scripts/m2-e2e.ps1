@@ -260,3 +260,4 @@ Write-Host ("  receiver: {0:N1} fps avg over {1} s, {2:N2} Mbps, decode {3:N2} m
 Write-Host ("  engine CPU: {0:N2} s over {1:N2} s wall ({2:N2} cores); {3:N1} ms CPU per output frame at {4} fps" -f
   $metrics.cpuSeconds, $metrics.wallSeconds, $metrics.cores, $metrics.msPerOutputFrame, $Fps)
 Write-Host "  artifacts: $work"
+Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue  # keep logs only on failure
