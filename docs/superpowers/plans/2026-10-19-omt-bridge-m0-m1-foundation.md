@@ -3111,6 +3111,8 @@ std::string Engine::handleCommand(const ClientId& client, const std::string& tex
 #include <cstdlib>
 #include <string>
 
+#include <ixwebsocket/IXNetSystem.h>
+
 #include "core/bridge_store.h"
 #include "engine/engine.h"
 
@@ -3126,6 +3128,11 @@ BOOL WINAPI onConsoleControl(DWORD) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Winsock must be initialised before ixwebsocket creates a socket, or listen() fails with
+  // WSA 10093 (WSANOTINITIALISED). BreadCamera's engine_main does exactly this; ixwebsocket does
+  // not initialise itself.
+  ix::initNetSystem();
+
   int port = 0;
   std::string token, bridgeFile;
   for (int i = 1; i + 1 < argc; i += 2) {
