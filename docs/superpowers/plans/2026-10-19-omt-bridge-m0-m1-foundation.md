@@ -2963,12 +2963,14 @@ TEST_CASE("outputs survive a control-channel disconnect (the UI-close guarantee)
   engine.apply(twoOutputsOneSource());
   engine.start();
 
-  const uint64_t before = engine.graph().hub("s1")->framesPublished();
   engine.onControlClientDisconnected(ob::ClientId{"c1"});
   std::this_thread::sleep_for(10ms);
-  const uint64_t after = engine.graph().hub("s1")->framesPublished();
 
-  CHECK(after == before);  // a disconnect never tears the graph down
+  // The graph is owned by the engine, not by the connection, so a disconnect must leave demand and
+  // rows exactly as they were. (framesPublished cannot move here — M1 has no adapter publishing —
+  // so assert the invariant that can actually fail if a disconnect tore the graph down.)
+  CHECK(engine.graph().hub("s1")->running());
+  CHECK(engine.graph().hub("s1")->refs() == 2);
   CHECK(engine.graph().rowCount() == 2u);
   engine.stop();
 }
@@ -3000,9 +3002,14 @@ class Engine {
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
 
-  // Builds the graph from the model. Safe to call repeatedly.
+  // Builds the graph from the model. Safe to call repeatedly, but it REPLACES the router's model
+  // (discarding anything commands minted) and re-seeds the id counters — so it is a startup call:
+  // run it on the same thread as start()/stop(), never from a command, adaptor or deliver thread.
   void apply(const Bridge& bridge);
 
+  // Starts the graph and, when controlPort > 0, the control server. On an AUTHORISED open the
+  // server pushes a full `state` reply before any command, so a UI should treat its first message
+  // as its initial snapshot rather than the answer to something it sent.
   void start();
   void stop();
 
@@ -3038,6 +3045,7 @@ class Engine {
 ```cpp
 #include "engine/engine.h"
 
+#include <exception>
 #include <utility>
 
 #include "core/bridge_store.h"
@@ -3084,17 +3092,23 @@ void Engine::onControlClientDisconnected(const ClientId&) {
 
 std::string Engine::handleCommand(const ClientId& client, const std::string& text) {
   // Commands arrive on per-connection ixwebsocket threads. Serialise the model edit together with
-  // the reconcile for two reasons: the router's model and id counter are plain members, and
+  // the reconcile for two reasons: the router's model and id counters are plain members, and
   // BridgeGraph::apply() is the single writer of hub demand — it holds raw row/hub pointers across
   // a deliberate unlock, so a second apply() from another thread could dangle them.
   std::lock_guard l(controlMu_);
-  const std::string reply = router_.handle(client, text);
-  // Every command may have edited the router's model (add-source, remove-source, add-output, …),
-  // so reconcile the graph with it here. Applying unconditionally needs no per-command list:
-  // apply() moves demand by delta, so an unchanged model costs nothing and fires no transition.
-  // Without this the graph never learns about an edit, and nothing would actually start or stop.
-  graph_.apply(router_.bridge());
-  return reply;
+  try {
+    const std::string reply = router_.handle(client, text);
+    // Every command may have edited the router's model (add-source, remove-source, add-output, …),
+    // so reconcile the graph with it here. Applying unconditionally needs no per-command list:
+    // apply() moves demand by delta, so an unchanged model costs nothing and fires no transition.
+    // Without this the graph never learns about an edit, and nothing would actually start or stop.
+    graph_.apply(router_.bridge());
+    return reply;
+  } catch (const std::exception&) {
+    // The router itself never throws, but apply() can (thread creation, allocation). An exception
+    // escaping here would reach an ixwebsocket callback thread and call std::terminate, so refuse.
+    return R"({"error":"internal error","ok":false})";
+  }
 }
 
 }  // namespace ob
@@ -3109,6 +3123,7 @@ std::string Engine::handleCommand(const ClientId& client, const std::string& tex
 
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <string>
 
 #include <ixwebsocket/IXNetSystem.h>
@@ -3131,7 +3146,10 @@ int main(int argc, char** argv) {
   // Winsock must be initialised before ixwebsocket creates a socket, or listen() fails with
   // WSA 10093 (WSANOTINITIALISED). BreadCamera's engine_main does exactly this; ixwebsocket does
   // not initialise itself.
-  ix::initNetSystem();
+  if (!ix::initNetSystem()) {
+    std::fprintf(stderr, "Winsock initialisation failed\n");
+    return 1;
+  }
 
   int port = 0;
   std::string token, bridgeFile;
@@ -3141,7 +3159,10 @@ int main(int argc, char** argv) {
     else if (k == "--token") token = argv[i + 1];
     else if (k == "--bridge") bridgeFile = argv[i + 1];
   }
-  if (port == 0) {
+  // A port outside 1..65535 is a usage error, not "run without a control channel": atoi("-1") and
+  // atoi("70000") are non-zero, so a `== 0` check would let them through and the engine would
+  // bridge with no way to command or stop it.
+  if (port < 1 || port > 65535) {
     std::fprintf(stderr, "usage: omt-bridge-engine --port <n> [--token <s>] [--bridge <file>]\n");
     return 2;
   }
@@ -3160,7 +3181,14 @@ int main(int argc, char** argv) {
     }
   }
 
-  engine.start();
+  try {
+    engine.start();
+  } catch (const std::exception& e) {
+    // A bind/listen failure surfaces here (ControlServer::start throws). Report it: an uncaught
+    // exception would terminate with no message, which a supervisor sees as an unexplained loop.
+    std::fprintf(stderr, "engine start failed: %s\n", e.what());
+    return 1;
+  }
 
   // Report readiness on stdout; the UI reads this first line.
   std::printf("READY %s\n", token.c_str());
