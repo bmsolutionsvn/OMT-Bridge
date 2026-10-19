@@ -603,8 +603,11 @@ ob_copy_runtime(omt-bridge-engine)
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 set(CMAKE_AUTOMOC ON)
 add_executable(omt-bridge WIN32 src/ui/main.cpp src/ui/main_window.cpp src/ui/main_window.h)
+target_include_directories(omt-bridge PRIVATE src)
 target_link_libraries(omt-bridge PRIVATE Qt6::Widgets)
 ```
+
+`target_include_directories(omt-bridge PRIVATE src)` is required: both `src/ui/main.cpp` and `main_window.cpp` `#include "ui/main_window.h"`, a project-root-relative path MSVC cannot resolve from `src/ui/` alone. It matches what `ob_tests` already does. It may become redundant once Task 6 links `ob_core` (whose `src` include is `PUBLIC`); leaving it is harmless.
 
 - [ ] **Step 6: Write `.github/workflows/build.yml`**
 
