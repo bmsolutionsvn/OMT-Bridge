@@ -794,6 +794,7 @@ class OmtSource {
   StateSink onState_;
   std::atomic<bool> stop_{false};
   mutable std::mutex mu_;
+  bool stopping_ = false;  // a stop is joining outside mu_; start() must not race it
   std::unique_ptr<OmtReceiverHolder> rx_;  // guarded by mu_; alive only while running
   std::thread video_, audio_;
 };
@@ -836,7 +837,8 @@ bool OmtSource::running() const {
 
 void OmtSource::start() {
   std::lock_guard l(mu_);
-  if (video_.joinable()) return;
+  // A stop() joins with mu_ released; until it finishes, the old loops still use the receiver.
+  if (video_.joinable() || audio_.joinable() || stopping_) return;
   stop_.store(false);
   try {
     rx_ = std::make_unique<OmtReceiverHolder>(address_);
@@ -859,6 +861,7 @@ void OmtSource::stop() {
       rx_.reset();
       return;
     }
+    stopping_ = true;
     stop_.store(true);
     v = std::move(video_);
     a = std::move(audio_);
@@ -867,7 +870,8 @@ void OmtSource::stop() {
   if (a.joinable()) a.join();
   {
     std::lock_guard l(mu_);
-    rx_.reset();  // closed only after both loops are gone
+    rx_.reset();      // closed only after both loops are gone
+    stopping_ = false;
   }
   if (onState_) onState_(SignalState::Ready, std::nullopt);
 }
@@ -920,8 +924,13 @@ void OmtSource::audioLoop(OmtReceiverHolder& rx) {
 ```
 
 The receiver is opened **before** either thread starts and closed **after** both join, so the two
-loops share one session and one network subscription. Do not create a second `Receiver` for audio:
+loops share one session and one network subscription. Do **not** create a second `Receiver` for audio:
 the header explicitly permits both calls on one object, one call type per thread.
+
+`start()` and `stop()` may be called from different threads. `stop()` joins with `mu_` released, so
+a `start()` arriving during that join would see no joinable threads and replace `rx_` while the old
+loops still hold a reference to it — a use-after-free. `stopping_` closes that window: `start()`
+does nothing until `stop()` has finished, and only then may a new receiver be opened.
 
 > **Audio is drained, not delivered.** Design §10 requires passthrough, but §20 does not list
 > audio in M2's done-criteria, so delivery is **deferred to M3** with the NDI adapters
