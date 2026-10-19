@@ -21,52 +21,78 @@ constexpr auto kOfflineAfter = std::chrono::seconds(2);
 OmtSource::OmtSource(std::string address, FrameSink onFrame, StateSink onState)
     : address_(std::move(address)), onFrame_(std::move(onFrame)), onState_(std::move(onState)) {}
 
-OmtSource::~OmtSource() { stop(); }
+OmtSource::~OmtSource() { stopImpl(false); }  // no state callback from a destructor
 
 bool OmtSource::running() const {
   std::lock_guard l(mu_);
-  return video_.joinable();
+  return rx_ != nullptr;  // true while a receiver is open, including the join window
 }
 
 void OmtSource::start() {
-  std::lock_guard l(mu_);
-  // A stop() joins with mu_ released; until it finishes, the old loops still use the receiver.
-  if (video_.joinable() || audio_.joinable() || stopping_) return;
-  stop_.store(false);
+  std::lock_guard lifecycle(lifecycle_);
+  {
+    std::lock_guard l(mu_);
+    if (video_.joinable() || audio_.joinable()) return;
+  }
+  std::unique_ptr<OmtReceiverHolder> rx;
   try {
-    rx_ = std::make_unique<OmtReceiverHolder>(address_);
+    rx = std::make_unique<OmtReceiverHolder>(address_);
   } catch (const std::exception& e) {
     // Never let an open failure escape into the graph's demand path.
-    rx_.reset();
     if (onState_) onState_(SignalState::Offline, ErrorInfo{"omt-open", e.what()});
     return;
   }
-  if (onState_) onState_(SignalState::Connecting, std::nullopt);
-  video_ = std::thread([this] { videoLoop(*rx_); });
-  audio_ = std::thread([this] { audioLoop(*rx_); });
-}
-
-void OmtSource::stop() {
-  std::thread v, a;
+  OmtReceiverHolder* holder = rx.get();
   {
     std::lock_guard l(mu_);
-    if (!video_.joinable() && !audio_.joinable()) {
-      rx_.reset();
-      return;
-    }
-    stopping_ = true;
+    stop_.store(false);
+    rx_ = std::move(rx);
+  }
+  if (onState_) onState_(SignalState::Connecting, std::nullopt);
+
+  std::thread v, a;
+  try {
+    v = std::thread([this, holder] { videoLoop(*holder); });
+    a = std::thread([this, holder] { audioLoop(*holder); });
+  } catch (const std::exception& e) {
     stop_.store(true);
-    v = std::move(video_);
-    a = std::move(audio_);
+    if (v.joinable()) v.join();
+    {
+      std::lock_guard l(mu_);
+      rx_.reset();
+    }
+    if (onState_) onState_(SignalState::Offline, ErrorInfo{"omt-thread", e.what()});
+    return;
+  }
+  {
+    std::lock_guard l(mu_);
+    video_ = std::move(v);
+    audio_ = std::move(a);
+  }
+}
+
+void OmtSource::stop() { stopImpl(true); }
+
+void OmtSource::stopImpl(bool notify) {
+  std::lock_guard lifecycle(lifecycle_);
+  std::thread v, a;
+  bool hadThreads = false;
+  {
+    std::lock_guard l(mu_);
+    hadThreads = video_.joinable() || audio_.joinable();
+    if (hadThreads) {
+      stop_.store(true);
+      v = std::move(video_);
+      a = std::move(audio_);
+    }
   }
   if (v.joinable()) v.join();
   if (a.joinable()) a.join();
   {
     std::lock_guard l(mu_);
-    rx_.reset();      // closed only after both loops are gone
-    stopping_ = false;
+    rx_.reset();  // closed only after both loops are gone
   }
-  if (onState_) onState_(SignalState::Ready, std::nullopt);
+  if (notify && onState_) onState_(SignalState::Ready, std::nullopt);
 }
 
 void OmtSource::videoLoop(OmtReceiverHolder& rx) {
@@ -84,6 +110,7 @@ void OmtSource::videoLoop(OmtReceiverHolder& rx) {
         f->premultiplied = vf.premultiplied;
         f->timestamp = vf.timestamp;
         f->uyvy = std::move(vf.uyvy);
+        if (!f->valid()) continue;  // malformed peer: never publish a frame the hub rejects
         if (!live) {
           live = true;
           if (onState_) onState_(SignalState::Live, std::nullopt);
@@ -100,9 +127,9 @@ void OmtSource::videoLoop(OmtReceiverHolder& rx) {
 }
 
 void OmtSource::audioLoop(OmtReceiverHolder& rx) {
+  omthx::AudioFrame af;  // hoisted: receiveAudio reuses the planar vector's capacity
   try {
     while (!stop_.load()) {
-      omthx::AudioFrame af;
       if (rx.receiver.receiveAudio(af, kReceiveTimeoutMs)) {
         // Audio passthrough is M3 (design 20 does not list it in M2's done-criteria). Draining
         // keeps the session's audio path moving instead of queuing behind an unread stream.

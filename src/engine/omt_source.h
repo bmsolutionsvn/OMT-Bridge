@@ -20,6 +20,8 @@ struct OmtReceiverHolder;  // hides omthx from this header
 class OmtSource {
  public:
   using FrameSink = std::function<void(std::shared_ptr<Frame>)>;
+  // Called from the start/stop caller and from the video/audio threads. It must not block, must
+  // not re-enter OmtSource, and must synchronise its own storage.
   using StateSink = std::function<void(SignalState, std::optional<ErrorInfo>)>;
 
   OmtSource(std::string address, FrameSink onFrame, StateSink onState);
@@ -32,6 +34,7 @@ class OmtSource {
   bool running() const;
 
  private:
+  void stopImpl(bool notify);
   void videoLoop(OmtReceiverHolder& rx);
   void audioLoop(OmtReceiverHolder& rx);
 
@@ -39,8 +42,8 @@ class OmtSource {
   FrameSink onFrame_;
   StateSink onState_;
   std::atomic<bool> stop_{false};
-  mutable std::mutex mu_;
-  bool stopping_ = false;  // a stop is joining outside mu_; start() must not race it
+  mutable std::mutex mu_;   // fields only; never join while holding it
+  std::mutex lifecycle_;    // serialises whole start()/stop() bodies
   std::unique_ptr<OmtReceiverHolder> rx_;  // guarded by mu_; alive only while running
   std::thread video_, audio_;
 };
