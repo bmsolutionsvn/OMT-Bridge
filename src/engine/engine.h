@@ -47,8 +47,7 @@ class Engine {
   std::string bridgeFile_;
   // Serialises command handling. ixwebsocket runs each connection on its own thread, so two
   // clients (or a supervisor restart overlapping a live UI) would otherwise race the router's
-  // model/counter — and would call BridgeGraph::apply() from two threads, breaking its documented
-  // one-owner-thread rule (it holds raw row/hub pointers across a deliberate unlock).
+  // model/counter — and would call BridgeGraph::apply() from two threads, breaking its no-concurrent-apply rule (it holds raw row/hub pointers across a deliberate unlock).
   std::mutex controlMu_;
   CommandRouter router_;
   BridgeGraph graph_{SinkFactory{}};

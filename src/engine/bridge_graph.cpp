@@ -15,7 +15,7 @@ void BridgeGraph::apply(const Bridge& bridge) {
   std::vector<OutputRow*> toStart;
   std::vector<std::unique_ptr<OutputRow>> retired;
   std::map<std::string, int> wanted;
-  {
+  try {
     std::lock_guard l(mu_);
 
     for (const Source& s : bridge.sources) {
@@ -64,6 +64,12 @@ void BridgeGraph::apply(const Bridge& bridge) {
 
     if (started_)
       for (auto& [id, r] : rows_) toStart.push_back(r.row.get());
+  } catch (...) {
+    // A throwing factory, configure or name must not leak a pruned hub's adapter: stop it while
+    // the hub is still alive, then let the caller report the failure.
+    for (auto& h : pruned)
+      while (h->refs() > 0) h->release();
+    throw;
   }
 
   for (auto& h : pruned)
