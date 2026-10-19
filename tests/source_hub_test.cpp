@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <memory>
+#include <thread>
+#include <vector>
 
 #include "engine/source_hub.h"
 
@@ -53,4 +55,30 @@ TEST_CASE("the latest frame is the newest published one") {
   hub.publish(makeFrame(8, 2));
   REQUIRE(hub.latest().get() != nullptr);
   CHECK(hub.latest()->format.width == 8);
+}
+
+// The class is the engine's synchronisation point, so its invariant gets a real interleaving:
+// every false->true transition is matched by a true->false one, so starts must equal stops and
+// the hub must end idle. This is the runnable check for the once-per-transition claim.
+TEST_CASE("hammering addRef and release from several threads keeps starts and stops balanced") {
+  ob::SourceHub hub("s1");
+  std::atomic<int> starts{0}, stops{0};
+  hub.setOnRunningChanged([&](bool on) { (on ? starts : stops).fetch_add(1); });
+
+  constexpr int kThreads = 4;
+  constexpr int kIters = 500;
+  std::vector<std::thread> threads;
+  for (int t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&] {
+      for (int i = 0; i < kIters; ++i) {
+        hub.addRef();
+        hub.release();
+      }
+    });
+  }
+  for (auto& th : threads) th.join();
+
+  CHECK(hub.refs() == 0);
+  CHECK_FALSE(hub.running());
+  CHECK(starts.load() == stops.load());
 }

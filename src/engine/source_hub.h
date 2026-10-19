@@ -31,6 +31,8 @@ class SourceHub {
   bool running() const;
 
   // Called once per running transition. The engine starts or stops the input adapter here.
+  // Install this BEFORE the first demand change: the setter does not replay the current state,
+  // so a callback installed after the hub is already running waits for the next transition.
   void setOnRunningChanged(RunningChanged cb);
 
   // Overwrites the slot; never queues. A frame shared by N outputs is decoded once (design 6.5).
