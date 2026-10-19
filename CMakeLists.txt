@@ -64,6 +64,7 @@ add_library(ob_engine STATIC
   src/engine/bridge_graph.cpp
   src/engine/control_server.cpp
   src/engine/command_router.cpp
+  src/engine/engine.cpp
 )
 target_include_directories(ob_engine PUBLIC src)
 target_link_libraries(ob_engine PUBLIC ob_core ixwebsocket::ixwebsocket)
@@ -89,6 +90,7 @@ add_executable(ob_tests
   tests/bridge_graph_test.cpp
   tests/command_router_test.cpp
   tests/supervisor_test.cpp
+  tests/engine_test.cpp
 )
 target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
@@ -100,6 +102,7 @@ ob_copy_runtime(ob_tests)
 
 # ---- shells ----
 add_executable(omt-bridge-engine src/engine/engine_main.cpp)
+target_link_libraries(omt-bridge-engine PRIVATE ob_engine)
 ob_copy_runtime(omt-bridge-engine)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
