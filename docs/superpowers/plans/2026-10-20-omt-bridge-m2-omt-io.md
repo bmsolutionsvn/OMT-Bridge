@@ -931,7 +931,15 @@ the header explicitly permits both calls on one object, one call type per thread
 
 - [ ] **Step 3: Build**
 
-Add `src/engine/omt_source.cpp` to `ob_engine`.
+Add `src/engine/omt_source.cpp` to `ob_engine`, and link OMT-HX from it publicly:
+
+```cmake
+target_link_libraries(ob_engine PUBLIC omthx)
+```
+
+`omthx` always exists: `cmake/omt-runtime.cmake` fails configuration when OMT-HX is missing. Only
+`ob_tests` linked it before this task, so without this line the engine library does not resolve
+`omthx::Receiver`.
 
 Run: `.\scripts\test.ps1`
 Expected: `SUCCESS`; no new cases yet.
