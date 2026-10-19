@@ -388,6 +388,16 @@ include(cmake/omt-runtime.cmake)  # defines the omthx target and omthx_copy_runt
 function(ob_copy_runtime target)
   if(OB_WITH_OMT)
     omthx_copy_runtime(${target})
+    # omthx_copy_runtime's POST_BUILD copy reads libomt.dll (built by the libomt_build custom
+    # target) and libvmx.dll. A target linking omthx inherits those dependencies; one that does
+    # not (e.g. a stub exe) would race them on a clean build and fail the copy. Depend on them
+    # explicitly. The TARGET guards keep this valid if OMT-HX is absent or renames its targets.
+    if(TARGET libomt_build)
+      add_dependencies(${target} libomt_build)
+    endif()
+    if(TARGET libvmx)
+      add_dependencies(${target} libvmx)
+    endif()
   endif()
 endfunction()
 ```
@@ -474,6 +484,13 @@ message(STATUS "OB_WITH_NDI=${OB_WITH_NDI}")
 function(ob_copy_runtime target)
   if(OB_WITH_OMT)
     omthx_copy_runtime(${target})
+    # See Task 3: without this, a target that does not link omthx races libomt.dll's build.
+    if(TARGET libomt_build)
+      add_dependencies(${target} libomt_build)
+    endif()
+    if(TARGET libvmx)
+      add_dependencies(${target} libvmx)
+    endif()
   endif()
   if(OB_WITH_NDI)
     add_custom_command(TARGET ${target} POST_BUILD
