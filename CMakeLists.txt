@@ -71,6 +71,11 @@ target_link_libraries(ob_engine PUBLIC ob_core ixwebsocket::ixwebsocket)
 # vcpkg port — exactly as BreadCamera's bc_engine links it. control_server uses it in Task 13.
 target_link_libraries(ob_engine PUBLIC bcrypt)
 
+# ---- shell ----
+add_library(ob_shell STATIC src/shell/supervisor.cpp src/shell/process_launcher.cpp)
+target_include_directories(ob_shell PUBLIC src)
+target_link_libraries(ob_shell PUBLIC ob_core)
+
 # ---- tests ----
 add_executable(ob_tests
   tests/main.cpp
@@ -83,12 +88,14 @@ add_executable(ob_tests
   tests/output_row_test.cpp
   tests/bridge_graph_test.cpp
   tests/command_router_test.cpp
+  tests/supervisor_test.cpp
 )
 target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
 target_link_libraries(ob_tests PRIVATE omthx)
 target_link_libraries(ob_tests PRIVATE ob_core)
 target_link_libraries(ob_tests PRIVATE ob_engine)
+target_link_libraries(ob_tests PRIVATE ob_shell)
 ob_copy_runtime(ob_tests)
 
 # ---- shells ----
