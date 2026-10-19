@@ -49,6 +49,7 @@ add_executable(ob_tests
   tests/main.cpp
   tests/frame_test.cpp
   tests/signal_state_test.cpp
+  tests/bounded_queue_test.cpp
 )
 target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
