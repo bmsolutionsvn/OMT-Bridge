@@ -2828,29 +2828,52 @@ struct FakeLauncher : ob::EngineLauncher {
   void kill() override { ++killed; running = false; }
 };
 
-TEST_CASE("the supervisor restarts a dead engine after its grace period") {
-  FakeLauncher l;
+TEST_CASE("the supervisor launches a dead engine and relaunches it while it stays dead") {
+  FakeLauncher l;  // not running
   ob::Supervisor sup(l);
   const auto t0 = Clock::now();
 
-  sup.poll(t0);                 // not running: schedules a launch
+  sup.poll(t0);
   CHECK(l.launched == 1);
 
-  l.running = false;            // engine died
-  sup.poll(t0 + std::chrono::seconds(1));
-  CHECK(l.launched == 1);       // inside the startup grace: no second launch yet
+  sup.poll(t0 + std::chrono::seconds(1));  // still dead: a dead engine is relaunched at once
+  CHECK(l.launched == 2);
 }
 
-TEST_CASE("a heartbeat resets the restart budget") {
+TEST_CASE("the startup grace protects a slow-starting engine from the heartbeat timeout") {
   FakeLauncher l;
+  l.running = true;  // launched, but it has not sent a heartbeat yet
   ob::Supervisor sup(l);
   const auto t0 = Clock::now();
-  sup.heartbeat(t0);
-  sup.poll(t0 + std::chrono::milliseconds(100));
-  CHECK(sup.launches() <= 1);
-  CHECK_FALSE(sup.crashLooping(t0 + std::chrono::milliseconds(100)));
+
+  sup.poll(t0);                             // sets the baseline
+  sup.poll(t0 + std::chrono::seconds(5));   // 5 s > the 3 s heartbeat timeout, but < the 8 s grace
+  CHECK(l.killed == 0);
+
+  sup.poll(t0 + std::chrono::seconds(9));   // past the grace, heartbeat still stale
+  CHECK(l.killed == 1);
+}
+
+TEST_CASE("a fresh heartbeat keeps a running engine from being killed") {
+  FakeLauncher l;
+  l.running = true;
+  ob::Supervisor sup(l);
+  const auto t0 = Clock::now();
+
+  sup.poll(t0);
+  sup.heartbeat(t0 + std::chrono::seconds(8));
+  sup.poll(t0 + std::chrono::seconds(9));  // past the grace, but the beat is only 1 s old
+  CHECK(l.killed == 0);
 }
 ```
+
+> These three cases encode the lifted `Supervisor`'s actual policy, which the earlier draft of this
+> task got wrong. Two things to keep straight: (a) the **startup grace protects a *running*
+> engine** from the stale-heartbeat kill — it does **not** delay relaunching a *dead* one, which is
+> relaunched on the next `poll()`; and (b) `heartbeat()` only refreshes `lastBeat_`, so it does
+> **not** reset the restart budget (the `launchTimes_` window). If the committed code disagrees with
+> any assertion here, the code is the authority — adapt the test to it and say so in your report,
+> rather than changing the lifted policy.
 
 - [ ] **Step 3: Add `ob_shell` to `CMakeLists.txt` and run**
 
@@ -2861,13 +2884,13 @@ target_include_directories(ob_shell PUBLIC src)
 target_link_libraries(ob_shell PUBLIC ob_core)
 ```
 
-Add `tests/supervisor_test.cpp` and link `ob_shell` into `ob_tests`.
+Add `tests/supervisor_test.cpp` to `ob_tests` and add `target_link_libraries(ob_tests PRIVATE ob_shell)`. (`process_launcher.cpp` uses nlohmann, which reaches it transitively: `ob_core` links `nlohmann_json::nlohmann_json` as `PUBLIC`. No other library is needed — BreadCamera's `bc_shell` links only `bc_core`.)
 
 Run:
 ```powershell
-cmake --build --preset release; .\build\release\ob_tests.exe
+cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: SUCCESS. If BreadCamera's `Supervisor` API differs from the test (its own test is `tests/supervisor_test.cpp`), adapt the test to the lifted API rather than the lifted API to the test.
+Expected: `[doctest] Status: SUCCESS!` — the three supervisor cases pass alongside the existing fifty.
 
 - [ ] **Step 4: Commit**
 
