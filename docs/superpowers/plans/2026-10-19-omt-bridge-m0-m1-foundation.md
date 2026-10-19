@@ -2695,15 +2695,15 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
 }  // namespace ob
 ```
 
-- [ ] **Step 5: Add to `CMakeLists.txt` and run**
+- [ ] **Step 5: Wire into `CMakeLists.txt` and run**
 
-Add `tests/command_router_test.cpp`, `src/engine/command_router.cpp` and `src/engine/control_server.cpp`.
+Three changes: add `src/engine/control_server.cpp` and `src/engine/command_router.cpp` to **`ob_engine`**, and `tests/command_router_test.cpp` to `ob_tests`. `ob_engine` already links `ixwebsocket::ixwebsocket` (the control server's transport) and `bcrypt` (its token generator), so no link change is needed.
 
 Run:
 ```powershell
-cmake --build --preset release; .\build\release\ob_tests.exe
+cmake --preset release; cmake --build --preset release; .\build\release\ob_tests.exe
 ```
-Expected: SUCCESS.
+Expected: `[doctest] Status: SUCCESS!` — the six router cases pass alongside the existing forty-one.
 
 - [ ] **Step 6: Commit**
 
