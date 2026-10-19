@@ -1016,6 +1016,7 @@ class TestSink : public ob::OmtSink {
   struct Sent { int w, h; bool alpha, premultiplied; int64_t ts; };
   std::vector<Sent> sent;
  protected:
+  void openLocked() override {}  // no network sender in a unit test
   void send(const ob::VideoFormat& f, const uint8_t*, bool alpha, bool premultiplied,
             int64_t ts) override {
     sent.push_back({f.width, f.height, alpha, premultiplied, ts});
@@ -1104,9 +1105,10 @@ class OmtSink : public Sink {
   // Overridden by the test to observe the decision without opening a sender.
   virtual void send(const VideoFormat& format, const uint8_t* uyvy, bool alpha,
                     bool premultiplied, int64_t timestamp);
+  // Overridden by the test so configure() opens no network sender.
+  virtual void openLocked();
 
  private:
-  void openLocked();
 
   mutable std::mutex mu_;
   Output config_;
@@ -1175,7 +1177,6 @@ void OmtSink::openLocked() {
 void OmtSink::deliver(const std::shared_ptr<const Frame>& frame) {
   if (!frame || !frame->valid()) return;  // never index a plane the frame does not have
   std::lock_guard l(mu_);
-  if (!sender_ || !sender_->sender) return;
 
   bool alpha = frame->format.alpha && config_.alpha != AlphaMode::Off;
   if (alpha && config_.target == OutputTarget::OmtHx && config_.codec == HxCodec::H264 &&
