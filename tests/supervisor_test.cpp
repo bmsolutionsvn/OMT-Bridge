@@ -50,3 +50,23 @@ TEST_CASE("a fresh heartbeat keeps a running engine from being killed") {
   sup.poll(t0 + std::chrono::seconds(9));  // past the grace, but the beat is only 1 s old
   CHECK(l.killed == 0);
 }
+
+// The policy's headline behaviour: five quick restarts inside the window, then one per 10 s.
+TEST_CASE("rapid relaunches are throttled to the slow interval once the budget is spent") {
+  FakeLauncher l;  // dead throughout
+  ob::Supervisor sup(l);
+  const auto t0 = Clock::now();
+
+  for (int i = 0; i < 5; ++i) {
+    sup.poll(t0 + std::chrono::seconds(i));  // 1 s apart, inside 60 s
+    l.running = false;                       // launch() marks it running; it dies again at once
+  }
+  CHECK(l.launched == 5);
+  CHECK(sup.crashLooping(t0 + std::chrono::seconds(5)));
+
+  sup.poll(t0 + std::chrono::seconds(6));  // inside the window and the slow interval: throttled
+  CHECK(l.launched == 5);
+
+  sup.poll(t0 + std::chrono::seconds(15));  // 11 s since the last attempt: one more is allowed
+  CHECK(l.launched == 6);
+}
