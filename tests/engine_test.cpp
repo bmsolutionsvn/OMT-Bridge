@@ -20,8 +20,13 @@ TEST_CASE("applying a bridge starts rows and refs the hub") {
   ob::Engine engine(0, "token");  // port 0: do not bind, tests drive apply() directly
   engine.apply(twoOutputsOneSource());
   REQUIRE(engine.graph().hub("s1") != nullptr);
+  // Demand is gated on start(): configuring must not open an adapter.
+  CHECK(engine.graph().hub("s1")->refs() == 0);
+  CHECK_FALSE(engine.graph().hub("s1")->running());
+  engine.start();
   CHECK(engine.graph().hub("s1")->refs() == 2);
   CHECK(engine.graph().rowCount() == 2u);
+  engine.stop();
 }
 
 TEST_CASE("outputs survive a control-channel disconnect (the UI-close guarantee)") {

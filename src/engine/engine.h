@@ -51,7 +51,7 @@ class Engine {
   // one-owner-thread rule (it holds raw row/hub pointers across a deliberate unlock).
   std::mutex controlMu_;
   CommandRouter router_;
-  BridgeGraph graph_{[](const std::shared_ptr<const Frame>&) {}};
+  BridgeGraph graph_{SinkFactory{}};
   std::unique_ptr<ControlServer> server_;
   std::atomic<uint64_t> controlConnections_{0};
 };

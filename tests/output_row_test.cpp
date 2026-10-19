@@ -20,13 +20,24 @@ static std::shared_ptr<const ob::Frame> frame(int64_t ts) {
   return f;
 }
 
+namespace {
+class LambdaSink : public ob::Sink {
+ public:
+  explicit LambdaSink(std::function<void(const std::shared_ptr<const ob::Frame>&)> f)
+      : f_(std::move(f)) {}
+  void deliver(const std::shared_ptr<const ob::Frame>& f) override { f_(f); }
+ private:
+  std::function<void(const std::shared_ptr<const ob::Frame>&)> f_;
+};
+}
+
 TEST_CASE("a row delivers what it is offered, in order") {
   std::mutex m;
   std::vector<int64_t> got;
-  ob::OutputRow row("o1", "s1", [&](const std::shared_ptr<const ob::Frame>& f) {
+  ob::OutputRow row("o1", std::make_unique<LambdaSink>([&](const std::shared_ptr<const ob::Frame>& f) {
     std::lock_guard l(m);
     got.push_back(f->timestamp);
-  });
+  }));
   row.start();
   for (int64_t i = 0; i < 3; ++i) row.offer(frame(i));
 
@@ -41,10 +52,11 @@ TEST_CASE("a row delivers what it is offered, in order") {
 
 TEST_CASE("a slow sink drops the oldest frames and never blocks the producer") {
   std::atomic<bool> gate{false};
-  ob::OutputRow row("o1", "s1",
-                    [&](const std::shared_ptr<const ob::Frame>&) {
+  ob::OutputRow row("o1",
+                    std::make_unique<LambdaSink>([&](const std::shared_ptr<const ob::Frame>&) {
                       while (!gate.load()) std::this_thread::sleep_for(1ms);
-                    }, /*capacity=*/2u);
+                    }),
+                    /*capacity=*/2u);
   row.start();
 
   // The worker takes one and blocks; two more fill the queue; the next two drop the oldest.
@@ -56,16 +68,16 @@ TEST_CASE("a slow sink drops the oldest frames and never blocks the producer") {
 }
 
 TEST_CASE("stopping a row unblocks its worker") {
-  ob::OutputRow row("o1", "s1", [](const std::shared_ptr<const ob::Frame>&) {});
+  ob::OutputRow row("o1", std::make_unique<LambdaSink>([](const std::shared_ptr<const ob::Frame>&) {}));
   row.start();
   row.stop();  // must not hang
   CHECK(true);
 }
 
 TEST_CASE("a sink that throws stops the row instead of terminating the process") {
-  ob::OutputRow row("o1", "s1", [](const std::shared_ptr<const ob::Frame>&) {
+  ob::OutputRow row("o1", std::make_unique<LambdaSink>([](const std::shared_ptr<const ob::Frame>&) {
     throw std::runtime_error("sink broke");
-  });
+  }));
   row.start();
   row.offer(frame(0));
 
@@ -79,7 +91,7 @@ TEST_CASE("a sink that throws stops the row instead of terminating the process")
 }
 
 TEST_CASE("a row can be started again after a stop") {
-  ob::OutputRow row("o1", "s1", [](const std::shared_ptr<const ob::Frame>&) {});
+  ob::OutputRow row("o1", std::make_unique<LambdaSink>([](const std::shared_ptr<const ob::Frame>&) {}));
   row.start();
   row.offer(frame(0));
   auto deadline = std::chrono::steady_clock::now() + 2s;
@@ -101,9 +113,9 @@ TEST_CASE("a row can be started again after a stop") {
 
 TEST_CASE("a restart clears a previous fault") {
   std::atomic<bool> fail{true};
-  ob::OutputRow row("o1", "s1", [&](const std::shared_ptr<const ob::Frame>&) {
+  ob::OutputRow row("o1", std::make_unique<LambdaSink>([&](const std::shared_ptr<const ob::Frame>&) {
     if (fail.load()) throw std::runtime_error("sink broke");
-  });
+  }));
 
   row.start();
   row.offer(frame(0));
@@ -123,4 +135,54 @@ TEST_CASE("a restart clears a previous fault") {
 
   CHECK_FALSE(row.faulted());
   CHECK(row.delivered() == 1u);
+}
+
+namespace {
+class RecordingSink : public ob::Sink {
+ public:
+  explicit RecordingSink(std::vector<int64_t>* seen) : seen_(seen) {}
+  void deliver(const std::shared_ptr<const ob::Frame>& f) override {
+    if (seen_) seen_->push_back(f->timestamp);
+  }
+  void configure(const ob::Output& o, const std::string& advertised) override {
+    configuredId = o.id;
+    configuredName = advertised;
+  }
+  std::string note() const override { return "note"; }
+  std::string configuredId, configuredName;
+ private:
+  std::vector<int64_t>* seen_;
+};
+}
+
+TEST_CASE("a row owns its sink and hands it the output configuration") {
+  std::vector<int64_t> seen;
+  auto sink = std::make_unique<RecordingSink>(&seen);
+  auto* raw = sink.get();
+  ob::OutputRow row("o1", std::move(sink));
+
+  ob::Output o;
+  o.id = "o1";
+  o.sourceId = "s1";
+  row.configure(o, "Bridge (Cam 1)");
+
+  CHECK(raw->configuredId == "o1");
+  CHECK(raw->configuredName == "Bridge (Cam 1)");
+  CHECK(row.sourceId() == "s1");
+
+  row.start();
+  row.offer(frame(7));
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (row.delivered() < 1 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  row.stop();
+
+  REQUIRE(seen.size() == 1u);
+  CHECK(seen[0] == 7);
+}
+
+TEST_CASE("a row reports its sink's note") {
+  auto sink = std::make_unique<RecordingSink>(nullptr);
+  ob::OutputRow row("o1", std::move(sink));
+  CHECK(row.note() == "note");
 }

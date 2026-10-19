@@ -21,9 +21,10 @@ namespace ob {
 
 class BridgeGraph {
  public:
-  using Deliver = OutputRow::Deliver;
+  // SinkFactory is namespace-scope in output_row.h; both are in namespace ob.
+  using HubReady = std::function<void(SourceHub& hub, const Source& source)>;
 
-  explicit BridgeGraph(Deliver deliver);
+  explicit BridgeGraph(SinkFactory sinks, HubReady onHubCreated = {});
   BridgeGraph(const BridgeGraph&) = delete;
   BridgeGraph& operator=(const BridgeGraph&) = delete;
   ~BridgeGraph();
@@ -43,6 +44,8 @@ class BridgeGraph {
   // calls apply() — so two transitions cannot interleave and the running callback's delivery
   // order always matches the last state change. Toggle thumbnail demand by changing the model and
   // calling apply(), not by reaching a hub from another thread.
+  // Non-const: tests install the hub-owned running hook through this accessor. Demand is still
+  // the graph's business — never addRef()/release() through it.
   SourceHub* hub(const std::string& sourceId) const;
   size_t hubCount() const;
   size_t rowCount() const;
@@ -52,15 +55,20 @@ class BridgeGraph {
   // Caller holds mu_. apply() and publish() use these, never the locked public ones.
   SourceHub* hubUnlocked(const std::string& sourceId) const;
 
+  // Moves every hub to `wanted`, by delta, with mu_ released. No-op while stopped.
+  void applyDemand(const std::map<std::string, int>& wanted);
+
   struct Row {
     std::unique_ptr<OutputRow> row;
     uint64_t offered = 0;
   };
 
   mutable std::mutex mu_;
-  Deliver deliver_;
+  SinkFactory sinks_;
+  HubReady onHubCreated_;
   std::map<std::string, std::unique_ptr<SourceHub>> hubs_;
   std::map<std::string, Row> rows_;  // by output id
+  std::map<std::string, int> demand_;  // per source id, the demand the model implies
   bool started_ = false;
 };
 

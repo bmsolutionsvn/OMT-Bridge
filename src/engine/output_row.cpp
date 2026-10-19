@@ -8,9 +8,8 @@ namespace {
 constexpr auto kPopTimeout = std::chrono::milliseconds(100);
 }
 
-OutputRow::OutputRow(std::string id, std::string sourceId, Deliver deliver, size_t capacity)
-    : id_(std::move(id)), sourceId_(std::move(sourceId)), deliver_(std::move(deliver)),
-      queue_(capacity) {}
+OutputRow::OutputRow(std::string id, std::unique_ptr<Sink> sink, size_t capacity)
+    : id_(std::move(id)), sink_(std::move(sink)), queue_(capacity) {}
 
 OutputRow::~OutputRow() { stop(); }
 
@@ -33,6 +32,11 @@ void OutputRow::stop() {
 
 void OutputRow::offer(std::shared_ptr<const Frame> frame) { queue_.push(std::move(frame)); }
 
+void OutputRow::configure(const Output& output, const std::string& advertisedName) {
+  config_ = output;  // configuration-only copy; Output::operator== is config-only by design
+  if (sink_) sink_->configure(config_, advertisedName);
+}
+
 void OutputRow::run() {
   for (;;) {
     auto f = queue_.pop(kPopTimeout);
@@ -45,7 +49,7 @@ void OutputRow::run() {
     // delivering; the engine turns that into Offline for this output alone, so a failed sink
     // never affects another row or its SourceHub (the header's promise).
     try {
-      deliver_(*f);
+      if (sink_) sink_->deliver(*f);
     } catch (...) {
       faulted_.store(true);
       return;

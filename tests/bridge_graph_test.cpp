@@ -2,8 +2,13 @@
 
 #include <atomic>
 #include <memory>
+#include <vector>
 
 #include "engine/bridge_graph.h"
+
+namespace {
+std::unique_ptr<ob::Sink> nullSink(const ob::Output&, const std::string&) { return nullptr; }
+}
 
 TEST_CASE("one source feeding two outputs counts two refs on one hub (N x M)") {
   ob::Bridge b;
@@ -12,8 +17,9 @@ TEST_CASE("one source feeding two outputs counts two refs on one hub (N x M)") {
   b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
   b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::OmtHx, .name = "B"});
 
-  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  ob::BridgeGraph graph(nullSink);
   graph.apply(b);
+  graph.start();
 
   CHECK(graph.hubCount() == 1u);
   CHECK(graph.rowCount() == 2u);
@@ -27,8 +33,9 @@ TEST_CASE("removing an output releases its ref, and an unreferenced source goes 
   b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
   b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
 
-  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  ob::BridgeGraph graph(nullSink);
   graph.apply(b);
+  graph.start();
   REQUIRE(graph.hub("s1")->refs() == 1);
 
   b.outputs.clear();
@@ -43,7 +50,7 @@ TEST_CASE("an output with no source is kept as an idle row") {
   ob::Bridge b;
   b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "", .target = ob::OutputTarget::Omt, .name = "A"});
 
-  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  ob::BridgeGraph graph(nullSink);
   graph.apply(b);
 
   CHECK(graph.rowCount() == 1u);
@@ -56,7 +63,7 @@ TEST_CASE("fan-out offers each published frame to every row that reads the sourc
   b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
   b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "B"});
 
-  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  ob::BridgeGraph graph(nullSink);
   graph.apply(b);
   graph.start();
 
@@ -72,7 +79,7 @@ TEST_CASE("fan-out offers each published frame to every row that reads the sourc
 }
 
 TEST_CASE("publishing to a source that has no rows is a no-op") {
-  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  ob::BridgeGraph graph(nullSink);
   auto f = std::make_shared<ob::Frame>();
   graph.publish("gone", f);  // must not throw
   CHECK(true);
@@ -86,8 +93,9 @@ TEST_CASE("re-applying an unchanged model fires no running transitions") {
   b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
   b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "B"});
 
-  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  ob::BridgeGraph graph(nullSink);
   graph.apply(b);
+  graph.start();
 
   std::atomic<int> transitions{0};
   graph.hub("s1")->setOnRunningChanged([&](bool) { transitions.fetch_add(1); });
@@ -105,8 +113,9 @@ TEST_CASE("an output that moves to another source moves its ref") {
   b.sources.push_back(ob::Source{.id = "s2", .kind = ob::SourceKind::Omt, .address = "PC2"});
   b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
 
-  ob::BridgeGraph graph([](const std::shared_ptr<const ob::Frame>&) {});
+  ob::BridgeGraph graph(nullSink);
   graph.apply(b);
+  graph.start();
   REQUIRE(graph.hub("s1")->refs() == 1);
 
   b.outputs[0].sourceId = "s2";
@@ -116,4 +125,59 @@ TEST_CASE("an output that moves to another source moves its ref") {
   CHECK_FALSE(graph.hub("s1")->running());
   CHECK(graph.hub("s2")->refs() == 1);
   CHECK(graph.hub("s2")->running());
+}
+
+TEST_CASE("a hub-created hook runs before the hub is given any demand") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+
+  int installedAtRefs = -1;
+  ob::BridgeGraph graph(nullSink, [&](ob::SourceHub& hub, const ob::Source&) {
+    hub.setOnRunningChanged([&](bool) {});
+    installedAtRefs = hub.refs();
+  });
+  graph.apply(b);
+
+  CHECK(installedAtRefs == 0);
+}
+
+TEST_CASE("no adapter is demanded before start, and stop releases it") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+
+  std::vector<bool> transitions;
+  ob::BridgeGraph graph(nullSink, [&](ob::SourceHub& hub, const ob::Source&) {
+    hub.setOnRunningChanged([&](bool on) { transitions.push_back(on); });
+  });
+  graph.apply(b);
+  CHECK(graph.hub("s1")->refs() == 0);
+  CHECK_FALSE(graph.hub("s1")->running());
+
+  graph.start();
+  CHECK(graph.hub("s1")->refs() == 1);
+  CHECK(graph.hub("s1")->running());
+
+  graph.stop();
+  CHECK(graph.hub("s1")->refs() == 0);
+  CHECK_FALSE(graph.hub("s1")->running());
+  REQUIRE(transitions.size() == 2u);
+  CHECK(transitions[0] == true);
+  CHECK(transitions[1] == false);
+}
+
+TEST_CASE("an unchanged re-apply still fires no transition") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+
+  std::atomic<int> transitions{0};
+  ob::BridgeGraph graph(nullSink);
+  graph.apply(b);
+  graph.start();
+  graph.hub("s1")->setOnRunningChanged([&](bool) { transitions.fetch_add(1); });
+
+  graph.apply(b);
+  CHECK(transitions.load() == 0);
 }
