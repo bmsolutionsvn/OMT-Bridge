@@ -1011,6 +1011,48 @@ TEST_CASE("the enums serialise to their wire names") {
   CHECK(std::string(ob::toString(ob::AlphaMode::Auto)) == "Auto");
   CHECK(std::string(ob::toString(ob::AlphaMode::Off)) == "Off");
 }
+
+// The writers and readers must agree, or the control protocol is asymmetric (a state reply
+// writes "OMT" while add-source rejects it). This is the test that keeps them one table.
+TEST_CASE("every wire name parses back to its enum") {
+  for (auto k : {ob::SourceKind::Omt, ob::SourceKind::OmtHx, ob::SourceKind::Ndi}) {
+    const auto back = ob::sourceKindFromString(ob::toString(k));
+    REQUIRE(back.has_value());
+    CHECK(*back == k);
+  }
+  for (auto t : {ob::OutputTarget::Omt, ob::OutputTarget::OmtHx, ob::OutputTarget::Ndi}) {
+    const auto back = ob::outputTargetFromString(ob::toString(t));
+    REQUIRE(back.has_value());
+    CHECK(*back == t);
+  }
+  for (auto c : {ob::HxCodec::Hevc, ob::HxCodec::H264}) {
+    const auto back = ob::hxCodecFromString(ob::toString(c));
+    REQUIRE(back.has_value());
+    CHECK(*back == c);
+  }
+  for (auto q : {ob::Quality::Low, ob::Quality::Medium, ob::Quality::High}) {
+    const auto back = ob::qualityFromString(ob::toString(q));
+    REQUIRE(back.has_value());
+    CHECK(*back == q);
+  }
+  for (auto a : {ob::AlphaMode::Auto, ob::AlphaMode::Off}) {
+    const auto back = ob::alphaModeFromString(ob::toString(a));
+    REQUIRE(back.has_value());
+    CHECK(*back == a);
+  }
+  CHECK_FALSE(ob::sourceKindFromString("Telepathy").has_value());
+  CHECK_FALSE(ob::hxCodecFromString("omt").has_value());  // the wire name is case-sensitive
+}
+
+TEST_CASE("equality ignores liveness, so a Live source still equals its saved form") {
+  ob::Source a{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "CAM"};
+  ob::Source b = a;
+  b.state = ob::SignalState::Live;
+  b.format = ob::VideoFormatView{1920, 1080, 60, 1, false, true};
+  CHECK(a == b);
+  b.address = "OTHER";
+  CHECK_FALSE(a == b);
+}
 ```
 
 - [ ] **Step 2: Write `src/core/bridge_model.h`**
@@ -1039,12 +1081,22 @@ std::string_view toString(OutputTarget t);
 std::string_view toString(HxCodec c);
 std::string_view toString(Quality q);
 std::string_view toString(AlphaMode a);
-// Wire names. kind/target/codec take their proper spelling ("OMT", "OMT-HX", "NDI", "HEVC",
-// "H.264"); quality and alpha follow design 5.2/5.3's field listing ("Low"/"Medium"/"High",
-// "Auto"/"Off"). These differ in case from `state` ("live"), which is lowercase only because it
-// is lifted verbatim from BreadCamera's shipped wire contract (Task 6) and must stay diffable.
-// Task 8's test pins every one of these so the JSON store (Task 9) and the command router
-// (Task 13) cannot drift from them.
+
+// The wire names, and their one home. kind/target/codec take their proper spelling ("OMT",
+// "OMT-HX", "NDI", "HEVC", "H.264"); quality and alpha follow design 5.2/5.3's field listing
+// ("Low"/"Medium"/"High", "Auto"/"Off"). These differ in case from `state` ("live"), which is
+// lowercase only because it is lifted verbatim from BreadCamera's shipped wire contract
+// (Task 6) and must stay diffable.
+//
+// The parsers below compare against toString(...) rather than re-listing the literals, so each
+// name exists exactly once. The JSON store (Task 9) and the command router (Task 13) MUST use
+// these — never their own name tables, which is how the protocol would otherwise end up writing
+// "OMT" in a state reply while rejecting it in an add-source.
+std::optional<SourceKind> sourceKindFromString(std::string_view s);
+std::optional<OutputTarget> outputTargetFromString(std::string_view s);
+std::optional<HxCodec> hxCodecFromString(std::string_view s);
+std::optional<Quality> qualityFromString(std::string_view s);
+std::optional<AlphaMode> alphaModeFromString(std::string_view s);
 
 // What a source is sending, once known. Kept separate from core/frame.h's VideoFormat so
 // core/ stays free of the omthx headers; the adapters copy one into the other.
@@ -1062,10 +1114,17 @@ struct Source {
   std::string id;
   SourceKind kind = SourceKind::Omt;
   std::string address;  // OMT: "HOSTNAME (name)"  ·  NDI: the NDI source name
-  SignalState state = SignalState::Ready;
-  VideoFormatView format;  // width/height/fps/alpha once known; all zero until then
+  SignalState state = SignalState::Ready;  // runtime liveness: NOT persisted (Task 9)
+  VideoFormatView format;                  // runtime: NOT persisted
   std::optional<HxCodec> codec;  // OMT-HX only
-  bool operator==(const Source&) const = default;
+
+  // Equality is CONFIGURATION equality: `state` and `format` are live values, not saved config,
+  // so a source that goes Live still equals its on-disk form. The JSON store round-trip (Task 9)
+  // compares exactly this, and no future diff-based apply() may read a liveness change as an
+  // edit and restart an adapter.
+  bool operator==(const Source& o) const {
+    return id == o.id && kind == o.kind && address == o.address && codec == o.codec;
+  }
 };
 
 struct Output {
@@ -1076,8 +1135,13 @@ struct Output {
   Quality quality = Quality::Medium;
   AlphaMode alpha = AlphaMode::Auto;
   std::string name;
-  SignalState state = SignalState::Ready;
-  bool operator==(const Output&) const = default;
+  SignalState state = SignalState::Ready;  // runtime liveness: NOT persisted
+
+  // Configuration equality (see Source): `state` is live liveness, not saved config.
+  bool operator==(const Output& o) const {
+    return id == o.id && sourceId == o.sourceId && target == o.target && codec == o.codec &&
+           quality == o.quality && alpha == o.alpha && name == o.name;
+  }
 };
 
 struct BridgeSettings {
@@ -1147,6 +1211,37 @@ std::string_view toString(Quality q) {
   return "Medium";
 }
 std::string_view toString(AlphaMode a) { return a == AlphaMode::Auto ? "Auto" : "Off"; }
+
+// Each parser compares against toString(...), so the literal exists in exactly one place and a
+// rename cannot desync the reader from the writer.
+std::optional<SourceKind> sourceKindFromString(std::string_view s) {
+  if (s == toString(SourceKind::Omt)) return SourceKind::Omt;
+  if (s == toString(SourceKind::OmtHx)) return SourceKind::OmtHx;
+  if (s == toString(SourceKind::Ndi)) return SourceKind::Ndi;
+  return std::nullopt;
+}
+std::optional<OutputTarget> outputTargetFromString(std::string_view s) {
+  if (s == toString(OutputTarget::Omt)) return OutputTarget::Omt;
+  if (s == toString(OutputTarget::OmtHx)) return OutputTarget::OmtHx;
+  if (s == toString(OutputTarget::Ndi)) return OutputTarget::Ndi;
+  return std::nullopt;
+}
+std::optional<HxCodec> hxCodecFromString(std::string_view s) {
+  if (s == toString(HxCodec::Hevc)) return HxCodec::Hevc;
+  if (s == toString(HxCodec::H264)) return HxCodec::H264;
+  return std::nullopt;
+}
+std::optional<Quality> qualityFromString(std::string_view s) {
+  if (s == toString(Quality::Low)) return Quality::Low;
+  if (s == toString(Quality::Medium)) return Quality::Medium;
+  if (s == toString(Quality::High)) return Quality::High;
+  return std::nullopt;
+}
+std::optional<AlphaMode> alphaModeFromString(std::string_view s) {
+  if (s == toString(AlphaMode::Auto)) return AlphaMode::Auto;
+  if (s == toString(AlphaMode::Off)) return AlphaMode::Off;
+  return std::nullopt;
+}
 
 const Source* Bridge::findSource(const std::string& id) const {
   const auto it = std::find_if(sources.begin(), sources.end(), [&](const Source& s) { return s.id == id; });
@@ -1289,42 +1384,22 @@ std::optional<Bridge> loadBridge(const std::filesystem::path& path);
 using nlohmann::json;
 
 namespace ob {
-namespace {
 
-const char* kKindNames[] = {"Omt", "OmtHx", "Ndi"};
-const char* kTargetNames[] = {"Omt", "OmtHx", "Ndi"};
-const char* kCodecNames[] = {"Hevc", "H264"};
-const char* kQualityNames[] = {"Low", "Medium", "High"};
-const char* kAlphaNames[] = {"Auto", "Off"};
-
-template <class E, size_t N>
-std::optional<E> parseEnum(const std::string& s, const char* const (&names)[N]) {
-  for (size_t i = 0; i < N; ++i) {
-    if (s == names[i]) return static_cast<E>(i);
-  }
-  return std::nullopt;
-}
-
-std::string enumName(SourceKind k) { return kKindNames[static_cast<int>(k)]; }
-std::string enumName(OutputTarget t) { return kTargetNames[static_cast<int>(t)]; }
-std::string enumName(HxCodec c) { return kCodecNames[static_cast<int>(c)]; }
-std::string enumName(Quality q) { return kQualityNames[static_cast<int>(q)]; }
-std::string enumName(AlphaMode a) { return kAlphaNames[static_cast<int>(a)]; }
-
-}  // namespace
-
+// No name tables here. The wire names live once, in core/bridge_model: toString() writes and the
+// *FromString() parsers read, so the store cannot drift from the enum contract (and from the
+// command router, which uses the same functions).
 void saveBridge(const Bridge& b, const std::filesystem::path& path) {
   json j;
   j["name"] = b.name;
-  j["settings"] = {{"defaultTarget", enumName(b.settings.defaultTarget)},
-                   {"defaultQuality", enumName(b.settings.defaultQuality)},
+  j["settings"] = {{"defaultTarget", std::string(toString(b.settings.defaultTarget))},
+                   {"defaultQuality", std::string(toString(b.settings.defaultQuality))},
                    {"thumbnailIntervalMs", b.settings.thumbnailIntervalMs},
                    {"startEngineWithApp", b.settings.startEngineWithApp}};
 
   j["sources"] = json::array();
   for (const Source& s : b.sources) {
-    json js{{"id", s.id}, {"kind", enumName(s.kind)}, {"address", s.address}};
-    if (s.codec.has_value()) js["codec"] = enumName(*s.codec);
+    json js{{"id", s.id}, {"kind", std::string(toString(s.kind))}, {"address", s.address}};
+    if (s.codec.has_value()) js["codec"] = std::string(toString(*s.codec));
     j["sources"].push_back(std::move(js));
   }
 
@@ -1332,10 +1407,10 @@ void saveBridge(const Bridge& b, const std::filesystem::path& path) {
   for (const Output& o : b.outputs) {
     j["outputs"].push_back(json{{"id", o.id},
                                 {"sourceId", o.sourceId},
-                                {"target", enumName(o.target)},
-                                {"codec", enumName(o.codec)},
-                                {"quality", enumName(o.quality)},
-                                {"alpha", enumName(o.alpha)},
+                                {"target", std::string(toString(o.target))},
+                                {"codec", std::string(toString(o.codec))},
+                                {"quality", std::string(toString(o.quality))},
+                                {"alpha", std::string(toString(o.alpha))},
                                 {"name", o.name}});
   }
 
@@ -1361,11 +1436,11 @@ std::optional<Bridge> loadBridge(const std::filesystem::path& path) {
 
     if (j.contains("settings")) {
       const auto& s = j["settings"];
-      if (auto v = parseEnum<OutputTarget>(s.value("defaultTarget", std::string{"OmtHx"}), kTargetNames))
+      if (auto v = outputTargetFromString(s.value("defaultTarget", std::string{"OMT-HX"})))
         b.settings.defaultTarget = *v;
       else
         return std::nullopt;
-      if (auto v = parseEnum<Quality>(s.value("defaultQuality", std::string{"Medium"}), kQualityNames))
+      if (auto v = qualityFromString(s.value("defaultQuality", std::string{"Medium"})))
         b.settings.defaultQuality = *v;
       else
         return std::nullopt;
@@ -1376,12 +1451,12 @@ std::optional<Bridge> loadBridge(const std::filesystem::path& path) {
     for (const auto& js : j.value("sources", json::array())) {
       Source s;
       s.id = js.value("id", std::string{});
-      auto kind = parseEnum<SourceKind>(js.value("kind", std::string{}), kKindNames);
+      auto kind = sourceKindFromString(js.value("kind", std::string{}));
       if (!kind) return std::nullopt;
       s.kind = *kind;
       s.address = js.value("address", std::string{});
       if (js.contains("codec")) {
-        auto c = parseEnum<HxCodec>(js.value("codec", std::string{}), kCodecNames);
+        auto c = hxCodecFromString(js.value("codec", std::string{}));
         if (!c) return std::nullopt;
         s.codec = *c;
       }
@@ -1392,16 +1467,16 @@ std::optional<Bridge> loadBridge(const std::filesystem::path& path) {
       Output o;
       o.id = jo.value("id", std::string{});
       o.sourceId = jo.value("sourceId", std::string{});
-      auto target = parseEnum<OutputTarget>(jo.value("target", std::string{}), kTargetNames);
+      auto target = outputTargetFromString(jo.value("target", std::string{}));
       if (!target) return std::nullopt;
       o.target = *target;
-      auto codec = parseEnum<HxCodec>(jo.value("codec", std::string{"Hevc"}), kCodecNames);
+      auto codec = hxCodecFromString(jo.value("codec", std::string{"HEVC"}));
       if (!codec) return std::nullopt;
       o.codec = *codec;
-      auto quality = parseEnum<Quality>(jo.value("quality", std::string{"Medium"}), kQualityNames);
+      auto quality = qualityFromString(jo.value("quality", std::string{"Medium"}));
       if (!quality) return std::nullopt;
       o.quality = *quality;
-      auto alpha = parseEnum<AlphaMode>(jo.value("alpha", std::string{"Auto"}), kAlphaNames);
+      auto alpha = alphaModeFromString(jo.value("alpha", std::string{"Auto"}));
       if (!alpha) return std::nullopt;
       o.alpha = *alpha;
       o.name = jo.value("name", std::string{});
@@ -2186,7 +2261,7 @@ TEST_CASE("input that is not JSON is refused, not crashed on") {
 TEST_CASE("add-source rejects an address that is not text") {
   ob::CommandRouter router;
   const auto reply = router.handle(ob::ClientId{"c1"},
-                                   R"({"cmd":"add-source","kind":"Omt","address":42})");
+                                   R"({"cmd":"add-source","kind":"OMT","address":42})");
   CHECK(reply.find("\"ok\":false") != std::string::npos);
   CHECK(reply.find("address") != std::string::npos);
 }
@@ -2202,17 +2277,19 @@ TEST_CASE("add-source rejects an unknown kind") {
 TEST_CASE("a valid add-source returns ok and the new id") {
   ob::CommandRouter router;
   const auto reply = router.handle(ob::ClientId{"c1"},
-                                   R"({"cmd":"add-source","kind":"Ndi","address":"CAM 1"})");
+                                   R"({"cmd":"add-source","kind":"NDI","address":"CAM 1"})");
   CHECK(reply.find("\"ok\":true") != std::string::npos);
   CHECK(reply.find("\"id\"") != std::string::npos);
 }
 
 TEST_CASE("state reports the model") {
   ob::CommandRouter router;
-  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"Ndi","address":"CAM 1"})");
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"NDI","address":"CAM 1"})");
   const auto reply = router.handle(ob::ClientId{"c1"}, R"({"cmd":"state"})");
   CHECK(reply.find("\"ok\":true") != std::string::npos);
   CHECK(reply.find("CAM 1") != std::string::npos);
+  // The symmetry that matters: what the reply writes is exactly what add-source accepts.
+  CHECK(reply.find("\"kind\":\"NDI\"") != std::string::npos);
 }
 ```
 
@@ -2265,14 +2342,6 @@ std::string refuse(const std::string& message) {
   return json{{"ok", false}, {"error", message}}.dump();
 }
 
-// The UI can only reorder rows and pick targets; an unknown string is an error, not a default.
-std::optional<SourceKind> parseKind(const std::string& s) {
-  if (s == "Omt") return SourceKind::Omt;
-  if (s == "OmtHx") return SourceKind::OmtHx;
-  if (s == "Ndi") return SourceKind::Ndi;
-  return std::nullopt;
-}
-
 }  // namespace
 
 std::string CommandRouter::handle(const ClientId&, const std::string& text) {
@@ -2306,7 +2375,9 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
       return refuse("add-source needs a text \"address\"");
     if (!j.contains("kind") || !j["kind"].is_string())
       return refuse("add-source needs a text \"kind\"");
-    const auto kind = parseKind(j["kind"]);
+    // Wire names come from core/bridge_model — the same table a state reply writes — so an
+    // unknown string is an error rather than a silent default.
+    const auto kind = sourceKindFromString(j["kind"]);
     if (!kind) return refuse("add-source: unknown \"kind\": " + j["kind"].get<std::string>());
 
     Source s;
