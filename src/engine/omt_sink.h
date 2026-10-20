@@ -26,6 +26,7 @@ class OmtSink : public Sink {
   void deliver(const std::shared_ptr<const Frame>& frame) override;
   void deliverAudio(const std::shared_ptr<const AudioFrame>& frame) override;
   std::string note() const override;
+  SinkStats stats() const override;
 
  protected:
   // Both virtuals are called with mu_ held. An override must not call any public method of

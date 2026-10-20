@@ -92,6 +92,9 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
             row["delivered"] = rt->delivered;
             row["dropped"] = rt->dropped;
             row["audioDelivered"] = rt->audioDelivered;
+            row["fps"] = rt->fps;
+            row["mbps"] = rt->mbps;
+            row["connections"] = rt->connections;
           }
         }
         outputs.push_back(std::move(row));

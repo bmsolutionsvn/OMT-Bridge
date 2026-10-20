@@ -127,4 +127,11 @@ Tally NdiSink::tally() const {
   return {};
 }
 
+SinkStats NdiSink::stats() const {
+  std::lock_guard l(mu_);
+  if (!sender_ || !sender_->send) return {};
+  // The public NDI send API has no byte counter; connections is what it can report.
+  return SinkStats{0, NDIlib_send_get_no_connections(sender_->send, 0)};
+}
+
 }  // namespace ob

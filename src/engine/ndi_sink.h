@@ -26,6 +26,7 @@ class NdiSink : public Sink {
   void deliverAudio(const std::shared_ptr<const AudioFrame>& frame) override;
   std::string note() const override;
   Tally tally() const override;
+  SinkStats stats() const override;
 
  protected:
   // Called with mu_ held; overrides must not call a public method of NdiSink.

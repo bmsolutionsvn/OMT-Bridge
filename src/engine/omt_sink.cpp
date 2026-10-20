@@ -106,4 +106,11 @@ std::string OmtSink::note() const {
   return openNote_.empty() ? frameNote_ : openNote_;
 }
 
+SinkStats OmtSink::stats() const {
+  std::lock_guard l(mu_);
+  if (!sender_ || !sender_->sender) return {};
+  const omthx::SenderStats s = sender_->sender->stats();
+  return SinkStats{s.bytesSent, s.connections};
+}
+
 }  // namespace ob

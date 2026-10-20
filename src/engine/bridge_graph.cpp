@@ -218,6 +218,9 @@ std::optional<BridgeGraph::RowStats> BridgeGraph::rowStats(const std::string& ou
   s.delivered = it->second.row->delivered();
   s.dropped = it->second.row->dropped();
   s.audioDelivered = it->second.row->audioDelivered();
+  const SinkStats sink = it->second.row->sinkStats();
+  s.bytesSent = sink.bytesSent;
+  s.connections = sink.connections;
   s.faulted = it->second.row->faulted();
   s.live = it->second.row->live();
   s.note = it->second.row->note();

@@ -125,6 +125,28 @@ TEST_CASE("state omits runtime keys when the engine supplies nothing") {
   CHECK(reply.find("\"state\":") == std::string::npos);
 }
 
+TEST_CASE("state reports measured output rate and connections") {
+  ob::CommandRouter router;
+  ob::Bridge b;
+  b.outputs.push_back(ob::Output{.id = "o1", .target = ob::OutputTarget::OmtHx, .name = "A"});
+  router.setBridge(b);
+  router.setRuntime(
+      [](const std::string&) { return std::nullopt; },
+      [](const std::string& id) -> std::optional<ob::OutputRuntime> {
+        ob::OutputRuntime rt;
+        rt.state = ob::SignalState::Live;
+        rt.fps = 59.5;
+        rt.mbps = 31.25;
+        rt.connections = 2;
+        return id == "o1" ? std::optional<ob::OutputRuntime>(rt) : std::nullopt;
+      });
+
+  const auto reply = router.handle(ob::ClientId{"c1"}, R"({"cmd":"state"})");
+  CHECK(reply.find("\"fps\":59.5") != std::string::npos);
+  CHECK(reply.find("\"mbps\":31.25") != std::string::npos);
+  CHECK(reply.find("\"connections\":2") != std::string::npos);
+}
+
 TEST_CASE("setBridge seeds the id counter past a loaded model") {
   ob::CommandRouter router;
   ob::Bridge loaded;

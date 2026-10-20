@@ -162,6 +162,7 @@ class RecordingSink : public ob::Sink {
     configuredName = advertised;
   }
   std::string note() const override { return "note"; }
+  ob::SinkStats stats() const override { return ob::SinkStats{1234, 2}; }
   std::string configuredId, configuredName;
  private:
   std::vector<int64_t>* seen_;
@@ -198,6 +199,20 @@ TEST_CASE("a row reports its sink's note") {
   auto sink = std::make_unique<RecordingSink>(nullptr);
   ob::OutputRow row("o1", std::move(sink));
   CHECK(row.note() == "note");
+}
+
+TEST_CASE("a row forwards its sink's counters") {
+  ob::OutputRow row("o1", std::make_unique<RecordingSink>(nullptr));
+  const auto s = row.sinkStats();
+  CHECK(s.bytesSent == 1234u);
+  CHECK(s.connections == 2);
+}
+
+TEST_CASE("a row with no sink reports zero counters") {
+  ob::OutputRow row("o1", nullptr);
+  const auto s = row.sinkStats();
+  CHECK(s.bytesSent == 0u);
+  CHECK(s.connections == 0);
 }
 
 TEST_CASE("a row with no sink is legal and never faults") {

@@ -89,6 +89,18 @@ TEST_CASE("editing a configured source restarts its adapter decision") {
   engine.stop();
 }
 
+TEST_CASE("the first rate sample reports no rate") {
+  ob::Engine engine(0, "token", {}, false);  // no devices in a unit test
+  engine.apply(twoOutputsOneSource());
+  engine.start();
+
+  const auto rt = engine.outputRuntime("o1");
+  REQUIRE(rt.has_value());
+  CHECK(rt->fps == 0.0);
+  CHECK(rt->mbps == 0.0);
+  engine.stop();
+}
+
 #ifdef OB_WITH_NDI
 TEST_CASE("an NDI source starts a real adapter and reports Connecting") {
   ob::Engine engine(0, "token");  // adapters enabled: a real NdiSource

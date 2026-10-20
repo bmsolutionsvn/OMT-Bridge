@@ -2,6 +2,7 @@
 // The headless engine (design 6.1, 6.6): owns the graph, the bridge file and the control
 // server. Closing the UI drops a control connection; it must never touch the graph.
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -37,7 +38,8 @@ class Engine {
   // and the hub, never the control mutex — safe from a reply thread.
   // Non-const: a state poll also refreshes tally, which pushes it to the adapters.
   std::optional<SourceRuntime> sourceRuntime(const std::string& id);
-  std::optional<OutputRuntime> outputRuntime(const std::string& id) const;
+  // Non-const: a poll records a rate sample, so the next poll measures over a real interval.
+  std::optional<OutputRuntime> outputRuntime(const std::string& id);
 
   // Starts the graph and, when controlPort > 0, the control server. On an AUTHORISED open the
   // server pushes a full `state` reply before any command, so a UI should treat its first message
@@ -87,6 +89,16 @@ class Engine {
   // holding controlMu_, so this map must never be guarded by controlMu_.
   mutable std::mutex runtimeMu_;                                // guards sourceRuntime_
   std::map<std::string, SourceRuntime> sourceRuntime_;          // runtimeMu_
+  // The last counter sample per output, for fps/Mbps. Guards itself: outputRuntime() is called
+  // from the control thread, but the public method may also be called by a test without
+  // controlMu_.
+  struct RateSample {
+    std::chrono::steady_clock::time_point at;
+    uint64_t frames = 0;
+    uint64_t bytes = 0;
+  };
+  std::mutex rateMu_;
+  std::map<std::string, RateSample> rates_;                     // rateMu_
   BridgeGraph graph_;
   std::unique_ptr<ControlServer> server_;
   std::atomic<uint64_t> controlConnections_{0};

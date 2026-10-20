@@ -21,6 +21,12 @@ class CountingSink : public ob::Sink {
   int count = 0;
 };
 
+class StatsSink : public ob::Sink {
+ public:
+  void deliver(const std::shared_ptr<const ob::Frame>&) override {}
+  ob::SinkStats stats() const override { return ob::SinkStats{4096, 3}; }
+};
+
 class FaultOnceSink : public ob::Sink {
  public:
   void deliver(const std::shared_ptr<const ob::Frame>&) override {
@@ -83,6 +89,21 @@ TEST_CASE("an output with no source is kept as an idle row") {
 
   CHECK(graph.rowCount() == 1u);
   CHECK(graph.hubCount() == 0u);
+}
+
+TEST_CASE("row stats carry the sink's counters") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+
+  ob::BridgeGraph graph([](const ob::Output&, const std::string&) -> std::unique_ptr<ob::Sink> {
+    return std::make_unique<StatsSink>();
+  });
+  graph.apply(b);
+  const auto stats = graph.rowStats("o1");
+  REQUIRE(stats.has_value());
+  CHECK(stats->bytesSent == 4096u);
+  CHECK(stats->connections == 3);
 }
 
 TEST_CASE("fan-out offers each published frame to every row that reads the source") {

@@ -63,6 +63,9 @@ TEST_CASE("alpha: Off sends no alpha plane") {
 TEST_CASE("a malformed frame is never sent") {
   TestNdiSink sink;
   sink.configure(ndiOutput(ob::AlphaMode::Auto), "Bridge (A)");
+  const auto stats = sink.stats();  // the test seam opens no sender
+  CHECK(stats.bytesSent == 0u);
+  CHECK(stats.connections == 0);
   auto f = std::make_shared<ob::Frame>();
   f->format = ob::VideoFormat{4, 2, 60, 1, true};
   f->uyvy.assign(7, 0);  // too short to be valid

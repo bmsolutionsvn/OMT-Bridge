@@ -70,6 +70,8 @@ class BridgeGraph {
   // A snapshot of one row's counters, for the state reply. nullopt when no such row exists.
   struct RowStats {
     uint64_t offered = 0, delivered = 0, dropped = 0, audioDelivered = 0;
+    uint64_t bytesSent = 0;
+    int connections = 0;
     bool faulted = false;
     bool live = false;
     std::string note;

@@ -18,6 +18,13 @@
 
 namespace ob {
 
+// What a sink's transport can report for the state poll. bytesSent is 0 when the transport has no
+// byte counter (the public NDI API), not an error: the UI shows the rate it can measure.
+struct SinkStats {
+  uint64_t bytesSent = 0;
+  int connections = 0;
+};
+
 // A sink owns one output's delivery. The graph constructs it through SinkFactory and configures
 // it; the row's worker calls deliver().
 //
@@ -44,6 +51,9 @@ class Sink {
   virtual void configure(const Output&, const std::string&) {}
   virtual std::string note() const { return {}; }
   virtual Tally tally() const { return {}; }
+  // Called with the stats poll, never per frame. Must lock its own state: the graph mutex does not
+  // protect a sink, and a poll can race configure()/deliver().
+  virtual SinkStats stats() const { return {}; }
 };
 // May return nullptr; a row with no sink is legal.
 using SinkFactory = std::function<std::unique_ptr<Sink>(const Output&, const std::string&)>;
@@ -78,6 +88,7 @@ class OutputRow {
   std::string note() const;
   // The output's downstream tally, read from its sink (design 12.3).
   Tally tally() const { return sink_ ? sink_->tally() : Tally{}; }
+  SinkStats sinkStats() const { return sink_ ? sink_->stats() : SinkStats{}; }
 
   uint64_t delivered() const { return delivered_.load(); }  // atomic: incremented on the worker thread
   // Audio packets handed to the sink, cumulative like delivered(). A throwing audio sink does not

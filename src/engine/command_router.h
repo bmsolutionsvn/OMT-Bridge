@@ -26,6 +26,10 @@ struct OutputRuntime {
   uint64_t delivered = 0;
   uint64_t dropped = 0;
   uint64_t audioDelivered = 0;
+  // Measured over the interval since the previous state poll; 0 on the first poll of a run.
+  double fps = 0;
+  double mbps = 0;
+  int connections = 0;
 };
 
 // Return nullopt for an id with no runtime row; the reply then carries no runtime keys at all.

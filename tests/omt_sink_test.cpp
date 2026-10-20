@@ -149,6 +149,9 @@ TEST_CASE("a malformed frame is never sent") {
 TEST_CASE("an NDI output keeps its M3 note even with alpha: Off") {
   ob::OmtSink sink;  // configure returns before constructing a sender for NDI
   sink.configure(output(ob::OutputTarget::Ndi, ob::HxCodec::Hevc, ob::AlphaMode::Off), "B (A)");
+  const auto stats = sink.stats();  // no sender: zero counters, not a crash
+  CHECK(stats.bytesSent == 0u);
+  CHECK(stats.connections == 0);
   auto frame = std::make_shared<ob::Frame>();
   frame->format = ob::VideoFormat{4, 2, 60, 1, true};
   frame->uyvy.assign(frame->lumaBytes() + frame->alphaBytes(), 0x80);

@@ -195,9 +195,13 @@ void Engine::pollTally() {
   }
 }
 
-std::optional<OutputRuntime> Engine::outputRuntime(const std::string& id) const {
+std::optional<OutputRuntime> Engine::outputRuntime(const std::string& id) {
   const auto stats = graph_.rowStats(id);
-  if (!stats) return std::nullopt;
+  if (!stats) {
+    std::lock_guard l(rateMu_);
+    rates_.erase(id);
+    return std::nullopt;
+  }
   OutputRuntime rt;
   rt.state = stats->faulted ? SignalState::Offline
                             : (stats->live ? SignalState::Live : SignalState::Ready);
@@ -205,6 +209,25 @@ std::optional<OutputRuntime> Engine::outputRuntime(const std::string& id) const 
   rt.delivered = stats->delivered;
   rt.dropped = stats->dropped;
   rt.audioDelivered = stats->audioDelivered;
+  rt.connections = stats->connections;
+
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard l(rateMu_);
+  const auto prev = rates_.find(id);
+  if (prev != rates_.end()) {
+    const double seconds = std::chrono::duration<double>(now - prev->second.at).count();
+    if (seconds > 0.0) {
+      // A reopened sender restarts its byte counter; report 0, never a negative rate.
+      const uint64_t frames = stats->delivered >= prev->second.frames
+                                  ? stats->delivered - prev->second.frames
+                                  : 0;
+      const uint64_t bytes =
+          stats->bytesSent >= prev->second.bytes ? stats->bytesSent - prev->second.bytes : 0;
+      rt.fps = static_cast<double>(frames) / seconds;
+      rt.mbps = static_cast<double>(bytes) * 8.0 / seconds / 1e6;
+    }
+  }
+  rates_[id] = RateSample{now, stats->delivered, stats->bytesSent};
   return rt;
 }
 
@@ -237,6 +260,10 @@ void Engine::stop() {
 #ifdef OB_WITH_NDI
   ndiAdapters_.clear();
 #endif
+  {
+    std::lock_guard r(rateMu_);
+    rates_.clear();  // a restart starts a new measurement, not a delta over the stopped gap
+  }
 }
 
 void Engine::onControlClientDisconnected(const ClientId&) {
