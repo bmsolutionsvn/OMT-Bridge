@@ -79,7 +79,9 @@ class Engine {
   // running hook (startAdapter) reads it while apply() runs.
   Bridge model_;                                               // controlMu_
   std::map<std::string, std::unique_ptr<OmtSource>> adapters_;      // controlMu_
+#ifdef OB_WITH_NDI
   std::map<std::string, std::unique_ptr<NdiSource>> ndiAdapters_;   // controlMu_
+#endif
   bool adaptersEnabled_ = true;
   // A state callback runs on an adapter thread, and stopAdapter() joins that adapter while
   // holding controlMu_, so this map must never be guarded by controlMu_.

@@ -102,7 +102,11 @@ void Engine::onHubCreated(SourceHub& hub, const Source& source) {
 }
 
 void Engine::startAdapter(const std::string& id) {
+#ifdef OB_WITH_NDI
   if (adapters_.count(id) != 0 || ndiAdapters_.count(id) != 0) return;
+#else
+  if (adapters_.count(id) != 0) return;
+#endif
   const Source* s = model_.findSource(id);
   if (s == nullptr) return;  // removed while stopping
   adapterStarts_.fetch_add(1);  // every start decision
@@ -145,7 +149,9 @@ void Engine::startAdapter(const std::string& id) {
 
 void Engine::stopAdapter(const std::string& id) {
   adapters_.erase(id);      // joins the loops; their state callbacks have finished
+#ifdef OB_WITH_NDI
   ndiAdapters_.erase(id);
+#endif
   // Retire this run's liveness only after the join, so no late callback can overwrite it.
   std::lock_guard l(runtimeMu_);
   const auto it = sourceRuntime_.find(id);
@@ -182,8 +188,10 @@ void Engine::pollTally() {
   for (const auto& [sourceId, t] : tallies) {
     if (const auto omt = adapters_.find(sourceId); omt != adapters_.end())
       omt->second->setTally(t.program, t.preview);
+#ifdef OB_WITH_NDI
     if (const auto ndi = ndiAdapters_.find(sourceId); ndi != ndiAdapters_.end())
       ndi->second->setTally(t.program, t.preview);
+#endif
   }
 }
 
@@ -226,7 +234,9 @@ void Engine::stop() {
   std::lock_guard l(controlMu_);
   graph_.stop();
   adapters_.clear();  // entries the stop callbacks did not already erase
+#ifdef OB_WITH_NDI
   ndiAdapters_.clear();
+#endif
 }
 
 void Engine::onControlClientDisconnected(const ClientId&) {
