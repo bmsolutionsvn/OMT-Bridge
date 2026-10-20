@@ -130,7 +130,7 @@ void OmtSource::videoLoop(OmtReceiverHolder& rx) {
 }
 
 void OmtSource::audioLoop(OmtReceiverHolder& rx) {
-  omthx::AudioFrame af;  // hoisted: receiveAudio reuses the planar vector's capacity
+  omthx::AudioFrame af;  // hoisted so the struct is reused; planar is moved out, so its buffer is not
   try {
     while (!stop_.load()) {
       if (rx.receiver.receiveAudio(af, kReceiveTimeoutMs)) {
@@ -139,11 +139,17 @@ void OmtSource::audioLoop(OmtReceiverHolder& rx) {
         a->samples = af.samples;
         a->timestamp = af.timestamp;
         a->planar = std::move(af.planar);
-        if (a->valid() && onAudio_) onAudio_(std::move(a));
+        if (a->valid() && onAudio_) {
+          try {
+            onAudio_(std::move(a));
+          } catch (...) {
+            // One bad packet must not end audio for the rest of the session.
+          }
+        }
       }
     }
   } catch (const std::exception&) {
-    // Audio failure must not take video down; the video path is independent.
+    // A receiver failure must not take video down; the video path is independent.
   }
 }
 

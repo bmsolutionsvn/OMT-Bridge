@@ -21,12 +21,13 @@ struct OmtReceiverHolder;  // hides omthx from this header
 class OmtSource {
  public:
   using FrameSink = std::function<void(std::shared_ptr<Frame>)>;
+  // Called from the audio thread. It must not block or re-enter OmtSource.
   using AudioSink = std::function<void(std::shared_ptr<AudioFrame>)>;
   // Called from the start/stop caller and from the video/audio threads. It must not block, must
   // not re-enter OmtSource, and must synchronise its own storage.
   using StateSink = std::function<void(SignalState, std::optional<ErrorInfo>)>;
 
-  OmtSource(std::string address, FrameSink onFrame, StateSink onState, AudioSink onAudio = {});
+  OmtSource(std::string address, FrameSink onFrame, StateSink onState, AudioSink onAudio);
   ~OmtSource();
   OmtSource(const OmtSource&) = delete;
   OmtSource& operator=(const OmtSource&) = delete;

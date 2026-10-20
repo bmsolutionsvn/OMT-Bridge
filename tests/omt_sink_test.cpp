@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <memory>
+#include <span>
 #include <vector>
 
 #include "engine/omt_sink.h"
@@ -10,12 +11,17 @@ class TestSink : public ob::OmtSink {
  public:
   struct Sent { int w, h; bool alpha, premultiplied; int64_t ts; };
   std::vector<Sent> sent;
+  struct AudioSent { int rate, channels, floats, ts; };
+  std::vector<AudioSent> audio;
   int opens = 0;
  protected:
   void openLocked() override { ++opens; }  // no network sender in a unit test
   void send(const ob::VideoFormat& f, const uint8_t*, bool alpha, bool premultiplied,
             int64_t ts) override {
     sent.push_back({f.width, f.height, alpha, premultiplied, ts});
+  }
+  void sendAudio(std::span<const float> planar, int rate, int channels, int64_t ts) override {
+    audio.push_back({rate, channels, static_cast<int>(planar.size()), static_cast<int>(ts)});
   }
 };
 }
@@ -148,4 +154,29 @@ TEST_CASE("an NDI output keeps its M3 note even with alpha: Off") {
   frame->uyvy.assign(frame->lumaBytes() + frame->alphaBytes(), 0x80);
   sink.deliver(frame);
   CHECK(sink.note() == "NDI output needs the NDI adapter (M3)");
+}
+
+TEST_CASE("audio keeps the source's rate, channels and total float count") {
+  TestSink sink;
+  sink.configure(output(ob::OutputTarget::OmtHx, ob::HxCodec::Hevc, ob::AlphaMode::Auto), "B (A)");
+
+  auto a = std::make_shared<ob::AudioFrame>();
+  a->format = {44100, 6};
+  a->samples = 5;
+  a->planar.assign(30, 0.25f);
+  a->timestamp = 99;
+  sink.deliverAudio(a);
+
+  REQUIRE(sink.audio.size() == 1u);
+  CHECK(sink.audio[0].rate == 44100);
+  CHECK(sink.audio[0].channels == 6);
+  CHECK(sink.audio[0].floats == 30);
+  CHECK(sink.audio[0].ts == 99);
+
+  auto bad = std::make_shared<ob::AudioFrame>();
+  bad->format = {48000, 2};
+  bad->samples = 4;
+  bad->planar.assign(7, 0.0f);  // one short: invalid
+  sink.deliverAudio(bad);
+  CHECK(sink.audio.size() == 1u);
 }

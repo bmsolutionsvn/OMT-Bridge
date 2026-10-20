@@ -3,6 +3,7 @@
 // joins cleanly and a keyframe is forced on its first frame by the library.
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 
 #include "core/audio.h"
@@ -32,6 +33,9 @@ class OmtSink : public Sink {
   // Overridden by the test to observe the decision without opening a sender.
   virtual void send(const VideoFormat& format, const uint8_t* uyvy, bool alpha,
                     bool premultiplied, int64_t timestamp);
+  // Same seam for audio; the test records rate, channels, timestamp and the sample count.
+  virtual void sendAudio(std::span<const float> planar, int sampleRate, int channels,
+                         int64_t timestamp);
   // Overridden by the test so configure() opens no network sender.
   virtual void openLocked();
 

@@ -108,7 +108,9 @@ void Engine::startAdapter(const std::string& id) {
         // while holding it).
         std::lock_guard l(runtimeMu_);
         sourceRuntime_[id].state = st;
-      });
+      },
+      // Audio is wired in Task 10: until then OMT audio is received and dropped, visibly here.
+      OmtSource::AudioSink{});
   adapters_[id] = std::move(src);
   adapters_[id]->start();
 }

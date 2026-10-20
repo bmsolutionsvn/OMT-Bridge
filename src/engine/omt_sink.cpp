@@ -76,12 +76,18 @@ void OmtSink::deliver(const std::shared_ptr<const Frame>& frame) {
 
 void OmtSink::deliverAudio(const std::shared_ptr<const AudioFrame>& frame) {
   if (!frame || !frame->valid()) return;
-  // Same mutex as the video send: the sender must outlive the call. Audio never gates video at
+  // mu_ guards sender_ against configure()/openLocked(), not omthx threading: omthx allows
+  // sendVideo and sendAudio on two threads, one call type per thread. Audio never gates video at
   // the row level; here it only waits behind one video send.
   std::lock_guard l(mu_);
+  sendAudio(std::span<const float>(frame->planar.data(), frame->planar.size()),
+            frame->format.sampleRate, frame->format.channels, frame->timestamp);
+}
+
+void OmtSink::sendAudio(std::span<const float> planar, int sampleRate, int channels,
+                        int64_t timestamp) {
   if (!sender_ || !sender_->sender) return;
-  sender_->sender->sendAudio(std::span<const float>(frame->planar.data(), frame->planar.size()),
-                             frame->format.sampleRate, frame->format.channels, frame->timestamp);
+  sender_->sender->sendAudio(planar, sampleRate, channels, timestamp);
 }
 
 void OmtSink::send(const VideoFormat& format, const uint8_t* uyvy, bool alpha, bool premultiplied,
