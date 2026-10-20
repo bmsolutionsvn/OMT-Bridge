@@ -75,6 +75,9 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
         if (sourceRuntime_) {
           if (const auto rt = sourceRuntime_(s.id)) {
             row["state"] = std::string(toString(rt->state));
+            if (!rt->error.empty()) row["error"] = rt->error;
+            row["program"] = rt->program;
+            row["preview"] = rt->preview;
             if (rt->format.known) {
               row["width"] = rt->format.width;
               row["height"] = rt->format.height;

@@ -315,6 +315,26 @@ TEST_CASE("add-output starts from the saved default target and quality") {
   CHECK(router.bridge().outputs.size() == 2u);
 }
 
+TEST_CASE("state reports a source's error and downstream tally") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"NDI","address":"CAM"})");
+  router.setRuntime(
+      [](const std::string& id) -> std::optional<ob::SourceRuntime> {
+        ob::SourceRuntime rt;
+        rt.state = ob::SignalState::Offline;
+        rt.error = "cannot connect to NDI source \"CAM\"";
+        rt.program = true;
+        rt.preview = true;
+        return id == "s1" ? std::optional<ob::SourceRuntime>(rt) : std::nullopt;
+      },
+      [](const std::string&) { return std::nullopt; });
+
+  const auto reply = router.handle(ob::ClientId{"c1"}, R"({"cmd":"state"})");
+  CHECK(reply.find("\"error\":\"cannot connect to NDI source") != std::string::npos);
+  CHECK(reply.find("\"program\":true") != std::string::npos);
+  CHECK(reply.find("\"preview\":true") != std::string::npos);
+}
+
 TEST_CASE("setBridge seeds the id counter past a loaded model") {
   ob::CommandRouter router;
   ob::Bridge loaded;

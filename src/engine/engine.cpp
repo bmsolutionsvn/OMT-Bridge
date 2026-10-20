@@ -5,8 +5,10 @@
 #include <vector>
 
 #include <omthx/omthx.h>
+#include <nlohmann/json.hpp>
 
 #include "core/bridge_store.h"
+#include "core/thumbnail.h"
 #include "engine/ndi_sink.h"
 #ifdef OB_WITH_NDI
 #include <Processing.NDI.Lib.h>
@@ -63,6 +65,8 @@ void Engine::applyLocked(const Bridge& bridge) {
 
   router_.setBridge(bridge);
   model_ = bridge;
+  for (auto it = lastThumbnail_.begin(); it != lastThumbnail_.end();)
+    it = model_.findSource(it->first) == nullptr ? lastThumbnail_.erase(it) : std::next(it);
 
   {
     std::lock_guard l(runtimeMu_);
@@ -130,11 +134,16 @@ void Engine::startAdapter(const std::string& id) {
         s->address,
         [this, id](std::shared_ptr<Frame> f) { graph_.publish(id, std::move(f)); },
         [this, id](std::shared_ptr<AudioFrame> a) { graph_.publishAudio(id, std::move(a)); },
-        [this, id](SignalState st, std::optional<ErrorInfo>) {
+        [this, id](SignalState st, std::optional<ErrorInfo> e) {
           // Adapter thread: own mutex only, never controlMu_ (stopAdapter joins this thread
           // while holding it).
           std::lock_guard l(runtimeMu_);
-          sourceRuntime_[id].state = st;
+          auto& rt = sourceRuntime_[id];
+          rt.state = st;
+          if (e)
+            rt.error = e->message;  // stays until the source is Live again
+          else if (st == SignalState::Live)
+            rt.error.clear();
         });
     ndiAdapters_[id] = std::move(src);
     ndiAdapters_[id]->start();
@@ -147,9 +156,14 @@ void Engine::startAdapter(const std::string& id) {
   auto src = std::make_unique<OmtSource>(
       s->address,
       [this, id](std::shared_ptr<Frame> f) { graph_.publish(id, std::move(f)); },
-      [this, id](SignalState st, std::optional<ErrorInfo>) {
+      [this, id](SignalState st, std::optional<ErrorInfo> e) {
         std::lock_guard l(runtimeMu_);
-        sourceRuntime_[id].state = st;
+        auto& rt = sourceRuntime_[id];
+        rt.state = st;
+        if (e)
+          rt.error = e->message;
+        else if (st == SignalState::Live)
+          rt.error.clear();
       },
       [this, id](std::shared_ptr<AudioFrame> a) { graph_.publishAudio(id, std::move(a)); });
   adapters_[id] = std::move(src);
@@ -167,6 +181,9 @@ void Engine::stopAdapter(const std::string& id) {
   if (it != sourceRuntime_.end()) {
     it->second.state = SignalState::Ready;
     it->second.format = {};
+    it->second.error.clear();
+    it->second.program = false;
+    it->second.preview = false;
   }
 }
 
@@ -178,10 +195,16 @@ std::optional<SourceRuntime> Engine::sourceRuntime(const std::string& id) {
     const auto it = sourceRuntime_.find(id);
     if (it == sourceRuntime_.end()) return std::nullopt;
     rt.state = it->second.state;
+    rt.error = it->second.error;
   }
   // Released runtimeMu_ before the graph lock: an adapter's state callback takes runtimeMu_ and
   // may run while a hub transition is in flight, so hold the two locks one at a time only.
   SourceHub* hub = graph_.hub(id);
+  if (hub != nullptr) {
+    const Tally tally = hub->downstreamTally();
+    rt.program = tally.program;
+    rt.preview = tally.preview;
+  }
   if (hub != nullptr && hub->running()) {
     if (const auto latest = hub->latest()) {
       rt.format = VideoFormatView{latest->format.width, latest->format.height,
@@ -288,6 +311,7 @@ void Engine::start() {
     ControlServer::Handlers h;
     h.open = [this](const ClientId& c) {
       ++controlConnections_;
+      onControlClientConnected();  // thumbnails keep sources running for the UI
       if (server_) server_->send(c, handleCommand(c, R"({"cmd":"state"})"));
     };
     h.close = [this](const ClientId& c) { onControlClientDisconnected(c); };
@@ -313,10 +337,54 @@ void Engine::stop() {
     std::lock_guard r(rateMu_);
     rates_.clear();  // a restart starts a new measurement, not a delta over the stopped gap
   }
+  lastThumbnail_.clear();
+  uiClients_ = 0;  // the control server has stopped; every client is gone
 }
 
 void Engine::onControlClientDisconnected(const ClientId&) {
-  // The graph is owned by the engine, not by a connection. Nothing to do, by design.
+  // The graph is owned by the engine, not by a connection. Only preview demand drops (design 11).
+  std::lock_guard l(controlMu_);
+  if (uiClients_ > 0) --uiClients_;
+  graph_.setThumbnailsWanted(uiClients_ > 0);
+}
+
+void Engine::onControlClientConnected() {
+  std::lock_guard l(controlMu_);
+  ++uiClients_;
+  graph_.setThumbnailsWanted(true);
+}
+
+void Engine::maybeSendThumbnails() {
+  if (!server_ || uiClients_ <= 0) return;
+  const int intervalMs = router_.bridge().settings.thumbnailIntervalMs;
+  if (intervalMs <= 0) return;
+  const auto now = std::chrono::steady_clock::now();
+  const auto interval = std::chrono::milliseconds(intervalMs);
+
+  for (const Source& s : model_.sources) {
+    const auto last = lastThumbnail_.find(s.id);
+    if (last != lastThumbnail_.end() && now - last->second < interval) continue;
+    SourceHub* hub = graph_.hub(s.id);
+    if (hub == nullptr || !hub->running()) continue;
+    const auto frame = hub->latest();
+    if (!frame || !frame->valid()) continue;
+    const Thumbnail thumb = makeThumbnail(*frame);
+    if (thumb.bgra.empty()) continue;
+
+    const nlohmann::json header{
+        {"sourceId", s.id}, {"width", thumb.width}, {"height", thumb.height}};
+    const std::string text = header.dump();
+    if (text.size() > 0xffffu) continue;
+    std::vector<uint8_t> message;
+    message.reserve(6u + text.size() + thumb.bgra.size());
+    message.insert(message.end(), {'O', 'B', 'T', '1'});
+    message.push_back(static_cast<uint8_t>(text.size() & 0xffu));
+    message.push_back(static_cast<uint8_t>((text.size() >> 8) & 0xffu));
+    message.insert(message.end(), text.begin(), text.end());
+    message.insert(message.end(), thumb.bgra.begin(), thumb.bgra.end());
+    server_->broadcastBinary(message);
+    lastThumbnail_[s.id] = now;
+  }
 }
 
 std::string Engine::handleCommand(const ClientId& client, const std::string& text) {
@@ -332,6 +400,7 @@ std::string Engine::handleCommand(const ClientId& client, const std::string& tex
     // applyLocked() costs nothing when nothing changed and fires no transition.
     // Without this the graph never learns about an edit, and nothing would actually start or stop.
     applyLocked(router_.bridge());
+    maybeSendThumbnails();  // the UI polls state; previews ride that cadence
     return reply;
   } catch (const std::exception&) {
     // The router itself never throws, but apply() can (thread creation, allocation). An exception

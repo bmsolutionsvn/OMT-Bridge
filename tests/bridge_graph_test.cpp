@@ -106,6 +106,24 @@ TEST_CASE("row stats carry the sink's counters") {
   CHECK(stats->connections == 3);
 }
 
+TEST_CASE("a wanted thumbnail keeps a source running with no outputs") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "PC"});
+  ob::BridgeGraph graph(nullSink);
+  graph.apply(b);
+  graph.start();
+  REQUIRE(graph.hub("s1") != nullptr);
+  CHECK_FALSE(graph.hub("s1")->running());
+
+  graph.setThumbnailsWanted(true);
+  CHECK(graph.hub("s1")->thumbnailWanted());
+  CHECK(graph.hub("s1")->running());  // preview demand starts the adapter
+
+  graph.setThumbnailsWanted(false);
+  CHECK_FALSE(graph.hub("s1")->running());
+  graph.stop();
+}
+
 TEST_CASE("fan-out offers each published frame to every row that reads the source") {
   ob::Bridge b;
   b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});

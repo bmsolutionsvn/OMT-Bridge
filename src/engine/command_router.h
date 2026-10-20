@@ -19,6 +19,11 @@ namespace ob {
 struct SourceRuntime {
   SignalState state = SignalState::Ready;
   VideoFormatView format;
+  // The last adapter error, kept until the source goes Live again (design 12.2). Empty when none.
+  std::string error;
+  // The downstream tally the hub ORed across this source's outputs (design 12.3).
+  bool program = false;
+  bool preview = false;
 };
 
 struct OutputRuntime {

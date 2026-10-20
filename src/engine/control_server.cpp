@@ -119,4 +119,11 @@ void ControlServer::broadcast(const std::string& text) {
   std::lock_guard l(m_);
   for (auto& [id, ws] : clients_) ws->send(text);
 }
+
+void ControlServer::broadcastBinary(const std::vector<uint8_t>& data) {
+  std::lock_guard l(m_);
+  if (data.empty()) return;
+  const std::string bytes(data.begin(), data.end());
+  for (auto& [id, ws] : clients_) ws->sendBinary(bytes);
+}
 }  // namespace ob

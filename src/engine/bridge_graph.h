@@ -46,6 +46,10 @@ class BridgeGraph {
   void start();
   void stop();
 
+  // Keeps every source's adapter running for the UI preview, whether or not an output references
+  // it (design 6.4, 11). Serialised by the caller like apply()/start()/stop().
+  void setThumbnailsWanted(bool wanted);
+
   // Hands a frame to every row whose output reads this source.
   void publish(const std::string& sourceId, std::shared_ptr<Frame> frame);
   // The audio twin: stores the packet in the hub's audio slot and offers it to every row of the
@@ -99,6 +103,7 @@ class BridgeGraph {
   std::map<std::string, int> demand_;  // per source id, the demand the model implies
   std::set<std::string> hooked_;  // source ids whose onHubCreated_ hook succeeded
   bool started_ = false;
+  bool thumbnailsWanted_ = false;  // the UI is connected (design 11)
 };
 
 }  // namespace ob

@@ -113,7 +113,20 @@ void BridgeGraph::applyDemand(const std::map<std::string, int>& wanted) {
     int cur = h->refs();
     for (; cur > want; --cur) h->release();
     for (; cur < want; ++cur) h->addRef();
+    h->setThumbnailWanted(thumbnailsWanted_);
   }
+}
+
+void BridgeGraph::setThumbnailsWanted(bool wanted) {
+  std::vector<SourceHub*> hubs;
+  bool apply = false;
+  {
+    std::lock_guard l(mu_);
+    thumbnailsWanted_ = wanted;
+    apply = wanted && started_;  // a stopped graph runs no adapters
+    for (auto& [id, h] : hubs_) hubs.push_back(h.get());
+  }
+  for (SourceHub* h : hubs) h->setThumbnailWanted(apply);
 }
 
 void BridgeGraph::start() {
@@ -139,8 +152,10 @@ void BridgeGraph::stop() {
     for (auto& [id, h] : hubs_) hubs.push_back(h.get());
   }
   for (OutputRow* r : rows) r->stop();
-  for (SourceHub* h : hubs)
-    while (h->refs() > 0) h->release();  // closes every ref-driven adapter
+  for (SourceHub* h : hubs) {
+    h->setThumbnailWanted(false);  // a stopped graph runs no adapters, UI or not
+    while (h->refs() > 0) h->release();
+  }
 }
 
 void BridgeGraph::publish(const std::string& sourceId, std::shared_ptr<Frame> frame) {

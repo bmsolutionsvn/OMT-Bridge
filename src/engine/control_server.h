@@ -36,6 +36,7 @@ class ControlServer {
   bool send(const ClientId& id, const std::string& text);
   bool sendBinary(const ClientId& id, const std::vector<uint8_t>& data);
   void broadcast(const std::string& text);
+  void broadcastBinary(const std::vector<uint8_t>& data);
 
  private:
   int port_;

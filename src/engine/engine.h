@@ -67,6 +67,10 @@ class Engine {
   // The graph's running hook, called synchronously during apply() — i.e. with controlMu_ held when
   // apply() came from a command. It only installs the adapter transition callback.
   void onHubCreated(SourceHub& hub, const Source& source);
+  // UI client count drives thumbnail demand (design 11). Both take controlMu_.
+  void onControlClientConnected();
+  // One preview per source per settings interval, pushed as binary frames. controlMu_ held.
+  void maybeSendThumbnails();
   // Reconciles router, adapters, runtime map and graph. controlMu_ held.
   void applyLocked(const Bridge& bridge);
   void startAdapter(const std::string& sourceId);  // controlMu_ held
@@ -114,6 +118,8 @@ class Engine {
   std::unique_ptr<ControlServer> server_;
   std::atomic<uint64_t> controlConnections_{0};
   std::atomic<uint64_t> adapterStarts_{0};
+  int uiClients_ = 0;  // controlMu_: authorised control clients, i.e. thumbnail demand
+  std::map<std::string, std::chrono::steady_clock::time_point> lastThumbnail_;  // controlMu_
 };
 
 }  // namespace ob
