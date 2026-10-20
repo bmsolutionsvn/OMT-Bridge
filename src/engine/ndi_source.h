@@ -1,6 +1,7 @@
 #pragma once
 // One NDI input (design 8). One worker owns the find/recv instances; stop() joins it.
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -19,6 +20,8 @@ class NdiSource {
   using FrameSink = std::function<void(std::shared_ptr<Frame>)>;
   // Called from the receive thread: must not block or re-enter NdiSource.
   using AudioSink = std::function<void(std::shared_ptr<AudioFrame>)>;
+  // Called from start/stop and from the receive thread. It must not block, must not re-enter
+  // NdiSource, and must synchronise its own storage.
   using StateSink = std::function<void(SignalState, std::optional<ErrorInfo>)>;
 
   NdiSource(std::string name, FrameSink onFrame, AudioSink onAudio, StateSink onState);
@@ -28,6 +31,7 @@ class NdiSource {
 
   void start();  // idempotent; Connecting, then Offline if the NDI runtime cannot start
   void stop();   // idempotent; joins the worker, destroys find/recv; Ready
+  // true while the worker exists; it may be true after the worker has exited on an error until stop().
   bool running() const;
 
   // Stored atomically; the receive thread applies it with NDIlib_recv_set_tally.
@@ -45,8 +49,7 @@ class NdiSource {
   mutable std::mutex mu_;  // fields only; never join while holding it
   std::mutex lifecycle_;   // serialises whole start()/stop() bodies
   std::thread thread_;     // guarded by mu_
-  std::atomic<bool> tallyProgram_{false};
-  std::atomic<bool> tallyPreview_{false};
+  std::atomic<uint32_t> tally_{0};  // bit 0 program, bit 1 preview
   std::atomic<bool> tallyDirty_{false};
 };
 

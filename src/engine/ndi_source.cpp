@@ -1,8 +1,11 @@
 #include "engine/ndi_source.h"
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <exception>
+#include <string>
+#include <thread>
 #include <utility>
 
 #include <Processing.NDI.Lib.h>
@@ -15,6 +18,7 @@ namespace {
 
 constexpr uint32_t kFindTimeoutMs = 200;
 constexpr uint32_t kCaptureTimeoutMs = 200;
+constexpr auto kErrorBackoff = std::chrono::milliseconds(200);
 constexpr auto kOfflineAfter = std::chrono::seconds(2);
 
 struct Finder {
@@ -44,6 +48,13 @@ const NDIlib_source_t* findSource(const NDIlib_source_t* sources, uint32_t count
 // NDI timestamps are 100 ns ticks, the same unit as Frame::timestamp.
 int64_t ticks(int64_t timestamp) {
   return timestamp == NDIlib_recv_timestamp_undefined ? 0 : timestamp;
+}
+
+// FourCC without the "0x", so the message reads "FourCC 0x55595641" like the NDI docs.
+std::string hex(uint32_t v) {
+  char buf[9];
+  std::snprintf(buf, sizeof buf, "%08X", v);
+  return buf;
 }
 
 }  // namespace
@@ -99,8 +110,7 @@ void NdiSource::stopImpl(bool notify) {
 }
 
 void NdiSource::setTally(bool program, bool preview) {
-  tallyProgram_.store(program);
-  tallyPreview_.store(preview);
+  tally_.store((program ? 1u : 0u) | (preview ? 2u : 0u));
   tallyDirty_.store(true);
 }
 
@@ -122,7 +132,7 @@ void NdiSource::run() {
 
   Receiver receiver;
   bool live = false;
-  bool formatReported = false;  // one ndi-format report per session, not per frame
+  bool formatReported = false;  // one ndi-format report per dropout, not per frame
   bool errorReported = false;
   bool connectReported = false;  // one report per failed connect, not per find iteration
   auto last = std::chrono::steady_clock::now();
@@ -140,6 +150,8 @@ void NdiSource::run() {
         settings.source_to_connect_to = *match;
         settings.color_format = NDIlib_recv_color_format_fastest;
         settings.bandwidth = NDIlib_recv_bandwidth_highest;
+        // "fastest" delivers fields regardless of this flag (Processing.NDI.Recv.h); the frame
+        // check below rejects them.
         settings.allow_video_fields = false;
         settings.p_ndi_recv_name = "OMT Bridge";
         receiver.instance = NDIlib_recv_create_v3(&settings);
@@ -155,9 +167,10 @@ void NdiSource::run() {
       }
 
       if (tallyDirty_.exchange(false)) {
+        const uint32_t bits = tally_.load();  // one word, so program/preview cannot tear
         NDIlib_tally_t tally;
-        tally.on_program = tallyProgram_.load();
-        tally.on_preview = tallyPreview_.load();
+        tally.on_program = (bits & 1u) != 0;
+        tally.on_preview = (bits & 2u) != 0;
         NDIlib_recv_set_tally(receiver.instance, &tally);
       }
 
@@ -170,20 +183,15 @@ void NdiSource::run() {
           const int64_t stride =
               v.line_stride_in_bytes ? v.line_stride_in_bytes : static_cast<int64_t>(v.xres) * 2;
           // UYVA is a UYVY plane then a width*height alpha plane. A negative stride is
-          // bottom-up; this bridge has no flip, so report it rather than guess.
-          const bool take = (v.FourCC == NDIlib_FourCC_type_UYVY || uyva) && stride > 0 &&
-                            v.p_data && v.xres >= 2 && v.yres >= 2 && v.xres % 2 == 0 &&
-                            stride >= static_cast<int64_t>(v.xres) * 2;
+          // bottom-up; this bridge has no flip, so report it rather than guess. "fastest" can
+          // also deliver a single field of an interlaced frame, which this bridge cannot pair.
+          const bool field = v.frame_format_type == NDIlib_frame_format_type_field_0 ||
+                             v.frame_format_type == NDIlib_frame_format_type_field_1;
+          const bool take = (v.FourCC == NDIlib_FourCC_type_UYVY || uyva) && !field &&
+                            stride > 0 && v.p_data && v.xres >= 2 && v.yres >= 2 &&
+                            v.xres % 2 == 0 && stride >= static_cast<int64_t>(v.xres) * 2;
           std::shared_ptr<Frame> f;
-          if (!take) {
-            live = false;  // ndi-format covers this dropout; no second Offline from the timeout
-            if (!formatReported) {
-              formatReported = true;
-              if (onState_)
-                onState_(SignalState::Offline,
-                         ErrorInfo{"ndi-format", "the NDI source sent unsupported video"});
-            }
-          } else {
+          if (take) {
             try {
               f = std::make_shared<Frame>();
               f->format = VideoFormat{v.xres, v.yres, v.frame_rate_N, v.frame_rate_D, uyva};
@@ -204,9 +212,24 @@ void NdiSource::run() {
               throw;
             }
           }
+          // Free before any callback: a throwing sink must not leak the captured buffer.
           NDIlib_recv_free_video_v2(receiver.instance, &v);
+          if (!take) {
+            live = false;  // ndi-format covers this dropout; no second Offline from the timeout
+            if (!formatReported) {
+              formatReported = true;
+              if (onState_)
+                onState_(SignalState::Offline,
+                         ErrorInfo{"ndi-format",
+                                   "unsupported NDI video: FourCC 0x" + hex(v.FourCC) + ", " +
+                                       std::to_string(v.xres) + "x" + std::to_string(v.yres) +
+                                       ", stride " + std::to_string(stride)});
+            }
+            continue;
+          }
           if (!f || !f->valid()) continue;  // never publish a frame the hub rejects
           last = std::chrono::steady_clock::now();  // liveness follows usable frames
+          formatReported = false;  // a later bad frame is a new dropout and reports again
           if (!live) {
             live = true;
             if (onState_) onState_(SignalState::Live, std::nullopt);
@@ -258,6 +281,8 @@ void NdiSource::run() {
             if (onState_)
               onState_(SignalState::Offline, ErrorInfo{"ndi-failed", "the NDI source failed"});
           }
+          // The SDK does not promise the error return is timeout-bound, so do not spin on it.
+          std::this_thread::sleep_for(kErrorBackoff);
           break;
         default:
           break;
