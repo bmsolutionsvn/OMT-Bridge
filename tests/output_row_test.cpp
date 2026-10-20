@@ -292,6 +292,12 @@ TEST_CASE("a blocked audio consumer does not delay video") {
   auto sink = std::make_unique<GatedAudio>();
   auto* raw = sink.get();
   ob::OutputRow row("o1", std::move(sink));
+  // Constructed after the row so it is destroyed first: a failed REQUIRE still releases the
+  // audio worker before ~OutputRow joins it.
+  struct ReleaseGate {
+    std::atomic<bool>* gate;
+    ~ReleaseGate() { gate->store(true); }
+  } release{&raw->gate};
   row.start();
 
   auto a = std::make_shared<ob::AudioFrame>();

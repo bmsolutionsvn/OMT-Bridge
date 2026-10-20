@@ -97,6 +97,27 @@ TEST_CASE("state reports runtime liveness when the engine supplies it") {
   CHECK(reply.find("\"width\":1920") != std::string::npos);
 }
 
+TEST_CASE("state reports output audio counters") {
+  ob::CommandRouter router;
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Omt, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Omt, .name = "A"});
+  router.setBridge(b);
+  router.setRuntime(
+      [](const std::string&) { return std::nullopt; },
+      [](const std::string& id) -> std::optional<ob::OutputRuntime> {
+        ob::OutputRuntime rt;
+        rt.state = ob::SignalState::Live;
+        rt.delivered = 9;
+        rt.dropped = 1;
+        rt.audioDelivered = 5;
+        return id == "o1" ? std::optional<ob::OutputRuntime>(rt) : std::nullopt;
+      });
+
+  const auto reply = router.handle(ob::ClientId{"c1"}, R"({"cmd":"state"})");
+  CHECK(reply.find("\"audioDelivered\":5") != std::string::npos);
+}
+
 TEST_CASE("state omits runtime keys when the engine supplies nothing") {
   ob::CommandRouter router;
   router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"OMT","address":"PC"})");
