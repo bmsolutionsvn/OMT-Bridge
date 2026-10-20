@@ -106,4 +106,26 @@ uint64_t SourceHub::framesPublished() const {
   return published_;
 }
 
+void SourceHub::storeAudio(std::shared_ptr<AudioFrame> frame) {
+  std::shared_ptr<const AudioFrame> published = std::move(frame);
+  std::shared_ptr<const AudioFrame> previous;
+  {
+    std::lock_guard l(mu_);
+    previous = std::move(latestAudio_);
+    latestAudio_ = std::move(published);
+    ++audioPublished_;
+  }
+  // `previous` is released here, outside the lock (same reason as storeFrame).
+}
+
+std::shared_ptr<const AudioFrame> SourceHub::latestAudio() const {
+  std::lock_guard l(mu_);
+  return latestAudio_;
+}
+
+uint64_t SourceHub::audioFramesPublished() const {
+  std::lock_guard l(mu_);
+  return audioPublished_;
+}
+
 }  // namespace ob

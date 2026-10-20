@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/audio.h"
 #include "engine/output_row.h"
 
 using namespace std::chrono_literals;
@@ -28,6 +29,18 @@ class LambdaSink : public ob::Sink {
   void deliver(const std::shared_ptr<const ob::Frame>& f) override { f_(f); }
  private:
   std::function<void(const std::shared_ptr<const ob::Frame>&)> f_;
+};
+
+class AudioSink : public ob::Sink {
+ public:
+  void deliver(const std::shared_ptr<const ob::Frame>&) override { ++video; }
+  void deliverAudio(const std::shared_ptr<const ob::AudioFrame>& a) override {
+    std::lock_guard l(m);
+    order.push_back(a->timestamp);
+  }
+  std::atomic<int> video{0};
+  std::mutex m;
+  std::vector<int64_t> order;
 };
 }
 
@@ -224,4 +237,74 @@ TEST_CASE("a faulted row keeps the sink's message and revives on restart") {
   CHECK(faulting.faulted());
   CHECK(faulting.note() == "encoder refused 4096x2160");
   (void)row;
+}
+
+TEST_CASE("a row delivers audio on its own path, in order") {
+  auto sink = std::make_unique<AudioSink>();
+  auto* raw = sink.get();
+  ob::OutputRow row("o1", std::move(sink));
+  row.start();
+  for (int64_t i = 0; i < 3; ++i) {
+    auto a = std::make_shared<ob::AudioFrame>();
+    a->format = {48000, 2};
+    a->samples = 1;
+    a->planar.assign(2, 0.0f);
+    a->timestamp = i;
+    row.offerAudio(a);
+  }
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (row.audioDelivered() < 3 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  row.stop();
+  CHECK(row.audioDelivered() == 3u);
+  std::lock_guard l(raw->m);
+  CHECK(raw->order == std::vector<int64_t>{0, 1, 2});
+}
+
+TEST_CASE("a blocked audio consumer does not delay video") {
+  auto sink = std::make_unique<AudioSink>();
+  auto* raw = sink.get();
+  ob::OutputRow row("o1", std::move(sink));
+  row.start();
+
+  auto a = std::make_shared<ob::AudioFrame>();
+  a->format = {48000, 2};
+  a->samples = 1;
+  a->planar.assign(2, 0.0f);
+  row.offerAudio(a);  // its worker may block in the sink
+  row.offer(frame(7));
+
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (raw->video.load() < 1 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  CHECK(raw->video.load() == 1);
+  row.stop();
+}
+
+TEST_CASE("a throwing audio sink does not fault the row") {
+  class ThrowingAudio : public ob::Sink {
+   public:
+    void deliver(const std::shared_ptr<const ob::Frame>&) override { ++video; }
+    void deliverAudio(const std::shared_ptr<const ob::AudioFrame>&) override {
+      throw std::runtime_error("audio broke");
+    }
+    std::atomic<int> video{0};
+  };
+  auto sink = std::make_unique<ThrowingAudio>();
+  auto* raw = sink.get();
+  ob::OutputRow row("o1", std::move(sink));
+  row.start();
+  auto a = std::make_shared<ob::AudioFrame>();
+  a->format = {48000, 2};
+  a->samples = 1;
+  a->planar.assign(2, 0.0f);
+  row.offerAudio(a);
+  row.offer(frame(7));
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (raw->video.load() < 1 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  row.stop();
+  CHECK_FALSE(row.faulted());
+  CHECK(row.audioDelivered() == 0u);
+  CHECK(raw->video.load() == 1);
 }

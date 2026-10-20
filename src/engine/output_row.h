@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 
+#include "core/audio.h"
 #include "core/bounded_queue.h"
 #include "core/bridge_model.h"
 #include "core/frame.h"
@@ -25,6 +26,9 @@ namespace ob {
 // A sink must never call back into BridgeGraph or SourceHub: construction and configure() run
 // while the graph mutex is held, so a callback would invert the lock order.
 //
+// deliver() and deliverAudio() run on two worker threads and may run concurrently, so a sink
+// must synchronise any state the two paths share. A default deliverAudio() drops audio.
+//
 // Construction and configure() run under the graph mutex: keep them cheap and do not block.
 // A factory or configure() may reopen a real adapter and may therefore block (an OMT sender
 // teardown/setup); while it does, commands wait. It must still never call back into the graph.
@@ -32,6 +36,7 @@ class Sink {
  public:
   virtual ~Sink() = default;
   virtual void deliver(const std::shared_ptr<const Frame>& frame) = 0;
+  virtual void deliverAudio(const std::shared_ptr<const AudioFrame>&) {}
   virtual void configure(const Output&, const std::string&) {}
   virtual std::string note() const { return {}; }
 };
@@ -51,6 +56,9 @@ class OutputRow {
   void stop();
 
   void offer(std::shared_ptr<const Frame> frame);
+  // Audio travels on its own queue and worker, so a stalled or failing sink's audio path can
+  // never delay or fault video (design 10).
+  void offerAudio(std::shared_ptr<const AudioFrame> frame);
 
   // Applies the output's configuration to the row and its sink. Idempotent. Called by the graph
   // under its mutex; the worker thread never reads config_ (the sink owns its own state).
@@ -65,6 +73,9 @@ class OutputRow {
   std::string note() const;
 
   uint64_t delivered() const { return delivered_.load(); }  // atomic: incremented on the worker thread
+  // Audio packets handed to the sink, cumulative like delivered(). A throwing audio sink does not
+  // count, and does not fault the row.
+  uint64_t audioDelivered() const { return audioDelivered_.load(); }
   uint64_t dropped() const { return queue_.dropped(); }
   // True while the running worker has delivered a frame recently. Per-run and decaying: start()/
   // stop()/a fault reset it, and a stall (no frame for 2 s) reports not-live without a stop.
@@ -75,15 +86,19 @@ class OutputRow {
 
  private:
   void run();
+  void audioRun();
 
   std::string id_;
   Output config_;
   std::unique_ptr<Sink> sink_;
   BoundedQueue<std::shared_ptr<const Frame>> queue_;
+  BoundedQueue<std::shared_ptr<const AudioFrame>> audioQueue_;
   std::thread thread_;
+  std::thread audioThread_;
   // Read by the test (and later the state snapshot) on a different thread from run(), which
   // does the increment: it must be atomic, not a plain uint64_t.
   std::atomic<uint64_t> delivered_ = 0;
+  std::atomic<uint64_t> audioDelivered_ = 0;
   std::atomic<int64_t> lastDeliverMs_{0};
   std::atomic<bool> live_ = false;
   std::atomic<bool> faulted_ = false;

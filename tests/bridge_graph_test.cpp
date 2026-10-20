@@ -7,6 +7,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/audio.h"
 #include "engine/bridge_graph.h"
 
 using namespace std::chrono_literals;
@@ -26,6 +27,14 @@ class FaultOnceSink : public ob::Sink {
     if (fail) throw std::runtime_error("open failed");
   }
   bool fail = true;
+};
+
+class AudioSink : public ob::Sink {
+ public:
+  void deliver(const std::shared_ptr<const ob::Frame>&) override { ++video; }
+  void deliverAudio(const std::shared_ptr<const ob::AudioFrame>&) override { ++audio; }
+  std::atomic<int> video{0};
+  std::atomic<int> audio{0};
 };
 }  // namespace  // namespace
 
@@ -361,4 +370,31 @@ TEST_CASE("a throwing apply still stops a pruned source's adapter") {
   REQUIRE(transitions.size() == 2u);
   CHECK(transitions[1] == false);
   CHECK(graph.hub("s1") == nullptr);
+}
+
+TEST_CASE("publishAudio reaches every row of the source and is counted") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "A"});
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "B"});
+
+  ob::BridgeGraph graph([](const ob::Output&, const std::string&) -> std::unique_ptr<ob::Sink> {
+    return std::make_unique<AudioSink>();
+  });
+  graph.apply(b);
+  graph.start();
+
+  auto a = std::make_shared<ob::AudioFrame>();
+  a->format = {48000, 2};
+  a->samples = 1;
+  a->planar.assign(2, 0.0f);
+  graph.publishAudio("s1", a);
+
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while ((graph.rowStats("o1")->audioDelivered < 1 || graph.rowStats("o2")->audioDelivered < 1) &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  CHECK(graph.rowStats("o1")->audioDelivered == 1u);
+  CHECK(graph.rowStats("o2")->audioDelivered == 1u);
+  graph.stop();
 }

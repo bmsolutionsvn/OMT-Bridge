@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/audio.h"
 #include "engine/source_hub.h"
 
 static std::shared_ptr<ob::Frame> makeFrame(int w, int h) {
@@ -126,4 +127,19 @@ TEST_CASE("the hub drops an opaque alpha plane after two seconds and keeps the f
   CHECK_FALSE(hub.latest()->premultiplied);
   CHECK(hub.latest()->valid());
   CHECK(hub.latest()->uyvy.size() == hub.latest()->lumaBytes());
+}
+
+TEST_CASE("the hub keeps only the newest audio packet") {
+  ob::SourceHub hub("s1");
+  for (int64_t i = 1; i <= 2; ++i) {
+    auto a = std::make_shared<ob::AudioFrame>();
+    a->format = {44100, 6};
+    a->samples = 1;
+    a->planar.assign(6, 0.0f);
+    a->timestamp = i;
+    hub.storeAudio(a);
+  }
+  REQUIRE(hub.latestAudio().get() != nullptr);
+  CHECK(hub.latestAudio()->timestamp == 2);
+  CHECK(hub.audioFramesPublished() == 2u);
 }

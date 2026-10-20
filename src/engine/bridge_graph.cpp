@@ -156,6 +156,16 @@ void BridgeGraph::publish(const std::string& sourceId, std::shared_ptr<Frame> fr
   }
 }
 
+void BridgeGraph::publishAudio(const std::string& sourceId, std::shared_ptr<AudioFrame> frame) {
+  std::lock_guard l(mu_);
+  SourceHub* h = hubUnlocked(sourceId);
+  if (h == nullptr) return;
+  h->storeAudio(frame);
+  for (auto& [id, r] : rows_) {
+    if (r.row->sourceId() == sourceId) r.row->offerAudio(frame);
+  }
+}
+
 SourceHub* BridgeGraph::hubUnlocked(const std::string& sourceId) const {
   const auto it = hubs_.find(sourceId);
   return it == hubs_.end() ? nullptr : it->second.get();
@@ -191,6 +201,7 @@ std::optional<BridgeGraph::RowStats> BridgeGraph::rowStats(const std::string& ou
   s.offered = it->second.offered;
   s.delivered = it->second.row->delivered();
   s.dropped = it->second.row->dropped();
+  s.audioDelivered = it->second.row->audioDelivered();
   s.faulted = it->second.row->faulted();
   s.live = it->second.row->live();
   s.note = it->second.row->note();

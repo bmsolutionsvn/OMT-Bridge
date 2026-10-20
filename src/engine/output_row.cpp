@@ -9,7 +9,7 @@ constexpr auto kPopTimeout = std::chrono::milliseconds(100);
 }
 
 OutputRow::OutputRow(std::string id, std::unique_ptr<Sink> sink, size_t capacity)
-    : id_(std::move(id)), sink_(std::move(sink)), queue_(capacity) {}
+    : id_(std::move(id)), sink_(std::move(sink)), queue_(capacity), audioQueue_(capacity) {}
 
 OutputRow::~OutputRow() { stop(); }
 
@@ -27,16 +27,24 @@ void OutputRow::start() {
   // queue, so reopen it before the worker starts — otherwise its first pop returns nullopt, sees
   // `closed()`, and the worker exits immediately, delivering nothing.
   queue_.reopen();
+  audioQueue_.reopen();
   thread_ = std::thread([this] { run(); });
+  audioThread_ = std::thread([this] { audioRun(); });
 }
 
 void OutputRow::stop() {
   queue_.close();
+  audioQueue_.close();
   if (thread_.joinable()) thread_.join();
+  if (audioThread_.joinable()) audioThread_.join();
   live_.store(false);
 }
 
 void OutputRow::offer(std::shared_ptr<const Frame> frame) { queue_.push(std::move(frame)); }
+
+void OutputRow::offerAudio(std::shared_ptr<const AudioFrame> frame) {
+  audioQueue_.push(std::move(frame));
+}
 
 std::string OutputRow::note() const {
   {
@@ -94,6 +102,23 @@ void OutputRow::run() {
                              std::chrono::steady_clock::now().time_since_epoch())
                              .count());
     live_.store(true);
+  }
+}
+
+void OutputRow::audioRun() {
+  for (;;) {
+    auto a = audioQueue_.pop(kPopTimeout);
+    if (!a.has_value()) {
+      if (audioQueue_.closed()) return;
+      continue;
+    }
+    // Audio never gates video (design 10): a throwing audio sink is swallowed and simply not
+    // counted, so it can neither fault this row nor stop its video worker.
+    try {
+      if (sink_) sink_->deliverAudio(*a);
+      ++audioDelivered_;
+    } catch (...) {
+    }
   }
 }
 

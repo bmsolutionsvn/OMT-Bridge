@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "core/alpha_gate.h"
+#include "core/audio.h"
 #include "core/frame.h"
 
 namespace ob {
@@ -58,6 +59,15 @@ class SourceHub {
 
   uint64_t framesPublished() const;
 
+  // The newest audio packet, in its own slot: audio never gates video and the two are stored
+  // independently (design 10). Single writer — BridgeGraph::publishAudio, serialised by the graph
+  // mutex — like storeFrame(); a direct second writer would race the slot.
+  // Ownership: the caller transfers the frame and must not reuse or mutate it afterwards.
+  void storeAudio(std::shared_ptr<AudioFrame> frame);
+  std::shared_ptr<const AudioFrame> latestAudio() const;
+
+  uint64_t audioFramesPublished() const;
+
  private:
   bool computeRunning() const;  // caller holds mu_
   void maybeTransition();       // fires the callback once per transition, outside the lock
@@ -72,6 +82,8 @@ class SourceHub {
 
   std::shared_ptr<const Frame> latest_;
   uint64_t published_ = 0;
+  std::shared_ptr<const AudioFrame> latestAudio_;
+  uint64_t audioPublished_ = 0;
   AlphaGate alpha_;
 };
 

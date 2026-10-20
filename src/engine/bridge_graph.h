@@ -48,6 +48,9 @@ class BridgeGraph {
 
   // Hands a frame to every row whose output reads this source.
   void publish(const std::string& sourceId, std::shared_ptr<Frame> frame);
+  // The audio twin: stores the packet in the hub's audio slot and offers it to every row of the
+  // source. Never touches the video offer counter — audio and video are counted separately.
+  void publishAudio(const std::string& sourceId, std::shared_ptr<AudioFrame> frame);
 
   // Locks; for callers outside the graph.
   // READ-ONLY uses (latest(), running(), framesPublished()) are fine from any thread. Demand
@@ -63,7 +66,7 @@ class BridgeGraph {
 
   // A snapshot of one row's counters, for the state reply. nullopt when no such row exists.
   struct RowStats {
-    uint64_t offered = 0, delivered = 0, dropped = 0;
+    uint64_t offered = 0, delivered = 0, dropped = 0, audioDelivered = 0;
     bool faulted = false;
     bool live = false;
     std::string note;
