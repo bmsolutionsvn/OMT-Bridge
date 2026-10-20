@@ -47,7 +47,7 @@ struct Discovery {
   std::vector<std::string> omt;
   std::vector<std::string> ndi;
 };
-// May block for the transport's find timeout (NDI: at most 1 s); the UI shows progress.
+// May block for the transport's find timeout (NDI: at most 2 s); the UI shows progress.
 using DiscoveryFn = std::function<Discovery()>;
 
 // The engine's global bridging switch ("Start" / "Stop all outputs"). The router only carries it;

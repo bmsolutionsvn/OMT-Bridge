@@ -18,6 +18,15 @@
 
 namespace ob {
 
+#ifdef OB_WITH_NDI
+struct NdiFinderHolder {
+  NDIlib_find_instance_t instance = nullptr;
+  ~NdiFinderHolder() {
+    if (instance) NDIlib_find_destroy(instance);
+  }
+};
+#endif
+
 Engine::Engine(int controlPort, std::string token, std::string bridgeFile, bool adapters)
     : controlPort_(controlPort),
       token_(std::move(token)),
@@ -220,14 +229,19 @@ Discovery Engine::discover() {
   found.omt = omthx::discover();
 #ifdef OB_WITH_NDI
   if (!ensureNdi()) return found;
-  NDIlib_find_instance_t find = NDIlib_find_create_v2(nullptr);
-  if (find == nullptr) return found;
-  NDIlib_find_wait_for_sources(find, 1000);  // the documented blocking bound
-  uint32_t count = 0;
-  const NDIlib_source_t* sources = NDIlib_find_get_current_sources(find, &count);
-  for (uint32_t i = 0; sources != nullptr && i < count; ++i)
-    if (sources[i].p_ndi_name != nullptr) found.ndi.emplace_back(sources[i].p_ndi_name);
-  NDIlib_find_destroy(find);
+  if (!ndiFinder_ && ensureNdi()) {
+    auto holder = std::make_unique<NdiFinderHolder>();
+    holder->instance = NDIlib_find_create_v2(nullptr);
+    if (holder->instance) ndiFinder_ = std::move(holder);
+  }
+  if (ndiFinder_ && ndiFinder_->instance) {
+    NDIlib_find_wait_for_sources(ndiFinder_->instance, 2000);
+    uint32_t count = 0;
+    const NDIlib_source_t* sources =
+        NDIlib_find_get_current_sources(ndiFinder_->instance, &count);
+    for (uint32_t i = 0; sources != nullptr && i < count; ++i)
+      if (sources[i].p_ndi_name != nullptr) found.ndi.emplace_back(sources[i].p_ndi_name);
+  }
 #endif
   return found;
 }
@@ -306,6 +320,14 @@ void Engine::start() {
   std::lock_guard l(controlMu_);
   graph_.start();
   running_ = true;
+#ifdef OB_WITH_NDI
+  // Start the finder before any UI can ask: remote sources need a few seconds to be announced.
+  if (!ndiFinder_ && ensureNdi()) {
+    auto holder = std::make_unique<NdiFinderHolder>();
+    holder->instance = NDIlib_find_create_v2(nullptr);
+    if (holder->instance) ndiFinder_ = std::move(holder);
+  }
+#endif
   if (controlPort_ > 0 && server_ == nullptr) {
     server_ = std::make_unique<ControlServer>(controlPort_, token_);
     ControlServer::Handlers h;
@@ -339,6 +361,9 @@ void Engine::stop() {
   }
   lastThumbnail_.clear();
   uiClients_ = 0;  // the control server has stopped; every client is gone
+#ifdef OB_WITH_NDI
+  ndiFinder_.reset();
+#endif
 }
 
 void Engine::onControlClientDisconnected(const ClientId&) {

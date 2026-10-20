@@ -222,13 +222,13 @@ void MainWindow::buildUi() {
   outputs_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
   outputs_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
   outputs_->horizontalHeader()->setMinimumSectionSize(56);
-  outputs_->setColumnWidth(2, 80);
+  outputs_->setColumnWidth(2, 92);
   outputs_->setColumnWidth(3, 72);
   outputs_->setColumnWidth(4, 76);
   outputs_->setColumnWidth(5, 64);
   outputs_->setColumnWidth(6, 102);
   outputs_->setColumnWidth(7, 158);
-  outputs_->setColumnWidth(8, 148);
+  outputs_->setColumnWidth(8, 140);
   outputs_->setColumnWidth(9, 74);
   outputsLayout->addWidget(outputs_);
 

@@ -20,6 +20,10 @@
 
 namespace ob {
 
+#ifdef OB_WITH_NDI
+struct NdiFinderHolder;  // hides the NDI SDK from this header
+#endif
+
 class Engine {
  public:
   // adapters is false only in unit tests: it keeps the graph deterministic and opens no device.
@@ -95,6 +99,9 @@ class Engine {
   std::map<std::string, std::unique_ptr<OmtSource>> adapters_;      // controlMu_
 #ifdef OB_WITH_NDI
   std::map<std::string, std::unique_ptr<NdiSource>> ndiAdapters_;   // controlMu_
+  // Kept alive so remote mDNS announcements accumulate between Discover clicks; a fresh
+  // one-second find misses a source on another machine (it needs ~3 s to appear).
+  std::unique_ptr<NdiFinderHolder> ndiFinder_;                      // controlMu_
 #endif
   bool adaptersEnabled_ = true;
   // The UI's Start / Stop all outputs switch. It gates the graph, not the control server, so the
