@@ -77,6 +77,13 @@ target_link_libraries(ob_engine PUBLIC omthx)
 # vcpkg port — exactly as BreadCamera's bc_engine links it. control_server uses it in Task 13.
 target_link_libraries(ob_engine PUBLIC bcrypt)
 
+# NDI is optional (spec 14.3): the adapters compile only when the SDK was found.
+if(OB_WITH_NDI)
+  target_sources(ob_engine PRIVATE src/engine/ndi_runtime.cpp)
+  target_link_libraries(ob_engine PUBLIC NDI::NDI)
+  target_compile_definitions(ob_engine PUBLIC OB_WITH_NDI=1)
+endif()
+
 # ---- shell ----
 add_library(ob_shell STATIC src/shell/supervisor.cpp src/shell/process_launcher.cpp)
 target_include_directories(ob_shell PUBLIC src)
@@ -100,6 +107,7 @@ add_executable(ob_tests
   tests/command_router_test.cpp
   tests/supervisor_test.cpp
   tests/engine_test.cpp
+  tests/ndi_runtime_test.cpp
 )
 target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
