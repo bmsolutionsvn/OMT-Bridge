@@ -47,6 +47,7 @@ Design §9.1. NDI output is the only edge that needs it.
 
 ```cpp
 // tests/alpha_convert_test.cpp
+// Canonical UYVY: each pair is [U][Y0][V][Y1]. This order is the point of the test.
 #include <doctest/doctest.h>
 #include "core/alpha_convert.h"
 
@@ -55,15 +56,13 @@ static ob::Frame make(int y, int u, int v, int a) {
   f.format = ob::VideoFormat{2, 2, 60, 1, true};
   f.premultiplied = true;
   f.uyvy.assign(f.lumaBytes() + f.alphaBytes(), 0);
-  // 2x2: UYVY pairs: Y0 U Y1 V per row.
-  f.uyvy[0] = static_cast<uint8_t>(y);
-  f.uyvy[1] = static_cast<uint8_t>(u);
-  f.uyvy[2] = static_cast<uint8_t>(y);
-  f.uyvy[3] = static_cast<uint8_t>(v);
-  f.uyvy[4] = static_cast<uint8_t>(y);
-  f.uyvy[5] = static_cast<uint8_t>(u);
-  f.uyvy[6] = static_cast<uint8_t>(y);
-  f.uyvy[7] = static_cast<uint8_t>(v);
+  for (size_t row = 0; row < 2; ++row) {
+    uint8_t* p = f.uyvy.data() + row * 4;
+    p[0] = static_cast<uint8_t>(u);
+    p[1] = static_cast<uint8_t>(y);
+    p[2] = static_cast<uint8_t>(v);
+    p[3] = static_cast<uint8_t>(y);
+  }
   for (size_t i = 0; i < f.alphaBytes(); ++i) f.uyvy[f.lumaBytes() + i] = static_cast<uint8_t>(a);
   return f;
 }
@@ -71,29 +70,33 @@ static ob::Frame make(int y, int u, int v, int a) {
 TEST_CASE("toStraight leaves opaque and empty alpha unchanged") {
   auto opaque = make(100, 120, 130, 255);
   ob::toStraight(opaque);
-  CHECK(opaque.uyvy[0] == 100);
-  CHECK(opaque.uyvy[1] == 120);
+  CHECK(opaque.uyvy[0] == 120);
+  CHECK(opaque.uyvy[1] == 100);
   CHECK_FALSE(opaque.premultiplied);
 
   auto black = make(200, 200, 200, 0);
   ob::toStraight(black);
-  CHECK(black.uyvy[0] == 16);   // colour over black
-  CHECK(black.uyvy[1] == 128);
+  CHECK(black.uyvy[1] == 16);
+  CHECK(black.uyvy[0] == 128);
 }
 
 TEST_CASE("toStraight divides by alpha and clamps") {
-  auto mid = make(126, 190, 70, 128);  // Y=16+(126-16)/0.502 ~= 235
+  auto mid = make(126, 190, 70, 128);
   ob::toStraight(mid);
-  CHECK(mid.uyvy[0] >= 233);
-  CHECK(mid.uyvy[0] <= 235);
-  CHECK(mid.uyvy[1] == 240);           // 251.5 clamps to the chroma legal maximum
+  CHECK(mid.uyvy[1] >= 233);
+  CHECK(mid.uyvy[1] <= 235);
+  CHECK(mid.uyvy[0] == 240);
 
-  auto low = make(20, 130, 130, 10);   // 16+(20-16)/0.039 ~= 118
+  auto low = make(20, 130, 130, 10);
   ob::toStraight(low);
-  CHECK(low.uyvy[0] > 100);
-  CHECK(low.uyvy[0] < 140);
+  CHECK(low.uyvy[1] > 100);
+  CHECK(low.uyvy[1] < 140);
 }
 ```
+
+The committed file also carries a 4x2 mixed-alpha case (per-pair means and a zero pair)
+and a guard case (no alpha / invalid frame). Both are required: a single-alpha 2x2 cannot
+see a luma/chroma plane swap, which is exactly the bug this task shipped once.
 
 - [ ] **Step 2: run and see it fail** — `.\scripts\test.ps1`; expected: `core/alpha_convert.h` missing.
 
