@@ -398,3 +398,49 @@ TEST_CASE("publishAudio reaches every row of the source and is counted") {
   CHECK(graph.rowStats("o2")->audioDelivered == 1u);
   graph.stop();
 }
+
+namespace {
+class TallySink : public ob::Sink {
+ public:
+  void deliver(const std::shared_ptr<const ob::Frame>&) override {}
+  ob::Tally tally() const override { return t; }
+  ob::Tally t;
+};
+}
+
+TEST_CASE("tally is OR-ed across a source's outputs and clears when none is on air") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "A"});
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "B"});
+
+  std::vector<TallySink*> sinks;
+  ob::BridgeGraph graph([&](const ob::Output&, const std::string&) -> std::unique_ptr<ob::Sink> {
+    auto sink = std::make_unique<TallySink>();
+    sinks.push_back(sink.get());
+    return sink;
+  });
+  graph.apply(b);
+  graph.start();
+  REQUIRE(sinks.size() == 2u);
+
+  sinks[0]->t.program = true;
+  auto tallies = graph.pollTallies();
+  REQUIRE(tallies.count("s1") == 1u);
+  CHECK(tallies["s1"].program);
+  CHECK_FALSE(tallies["s1"].preview);
+  CHECK(graph.hub("s1")->downstreamTally().program);
+
+  sinks[0]->t.program = false;
+  sinks[1]->t.preview = true;
+  tallies = graph.pollTallies();
+  CHECK_FALSE(tallies["s1"].program);
+  CHECK(tallies["s1"].preview);
+
+  sinks[1]->t.preview = false;
+  tallies = graph.pollTallies();
+  CHECK_FALSE(tallies["s1"].program);
+  CHECK_FALSE(tallies["s1"].preview);
+  CHECK_FALSE(graph.hub("s1")->downstreamTally().program);
+  graph.stop();
+}

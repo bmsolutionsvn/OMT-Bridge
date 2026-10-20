@@ -63,6 +63,9 @@ class BridgeGraph {
   size_t hubCount() const;
   size_t rowCount() const;
   uint64_t offeredToRow(const std::string& outputId) const;
+  // Reads every output's downstream tally, ORs it per source, stores it on each hub, and returns
+  // the per-source result. Called with the stats poll (design 12.3), never per frame.
+  std::map<std::string, Tally> pollTallies();
 
   // A snapshot of one row's counters, for the state reply. nullopt when no such row exists.
   struct RowStats {

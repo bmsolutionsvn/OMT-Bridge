@@ -186,6 +186,22 @@ size_t BridgeGraph::rowCount() const {
   return rows_.size();
 }
 
+std::map<std::string, Tally> BridgeGraph::pollTallies() {
+  std::lock_guard l(mu_);
+  std::map<std::string, Tally> out;
+  for (auto& [id, r] : rows_) {
+    const std::string& source = r.row->sourceId();
+    if (source.empty()) continue;
+    const Tally t = r.row->tally();
+    Tally& acc = out[source];
+    acc.program = acc.program || t.program;
+    acc.preview = acc.preview || t.preview;
+  }
+  for (auto& [id, hub] : hubs_)
+    hub->setDownstreamTally(out.count(id) != 0 ? out[id] : Tally{});
+  return out;
+}
+
 uint64_t BridgeGraph::offeredToRow(const std::string& outputId) const {
   std::lock_guard l(mu_);
   const auto it = rows_.find(outputId);

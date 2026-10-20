@@ -26,6 +26,11 @@ OmtSource::OmtSource(std::string address, FrameSink onFrame, StateSink onState, 
 
 OmtSource::~OmtSource() { stopImpl(false); }  // no state callback from a destructor
 
+void OmtSource::setTally(bool program, bool preview) {
+  tally_.store((program ? 1u : 0u) | (preview ? 2u : 0u));
+  tallyDirty_.store(true);
+}
+
 bool OmtSource::running() const {
   std::lock_guard l(mu_);
   return rx_ != nullptr;  // true while a receiver is open, including the join window
@@ -104,6 +109,10 @@ void OmtSource::videoLoop(OmtReceiverHolder& rx) {
     bool live = false;
     auto last = std::chrono::steady_clock::now();
     while (!stop_.load()) {
+      if (tallyDirty_.exchange(false)) {
+        const uint32_t t = tally_.load();
+        rx.receiver.setTally(omthx::Tally{(t & 2u) != 0, (t & 1u) != 0});
+      }
       omthx::VideoFrame vf;
       if (rx.receiver.receiveVideo(vf, kReceiveTimeoutMs)) {
         auto f = std::make_shared<Frame>();

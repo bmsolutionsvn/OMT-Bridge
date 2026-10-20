@@ -14,14 +14,9 @@
 #include "core/bounded_queue.h"
 #include "core/bridge_model.h"
 #include "core/frame.h"
+#include "core/tally.h"
 
 namespace ob {
-
-// A downstream receiver's tally for one output (design 12.3). Never the bridge's own liveness.
-struct Tally {
-  bool program = false;
-  bool preview = false;
-};
 
 // A sink owns one output's delivery. The graph constructs it through SinkFactory and configures
 // it; the row's worker calls deliver().
@@ -81,6 +76,8 @@ class OutputRow {
   const Output& config() const { return config_; }
   // The fault message when the sink threw, else the sink's own note.
   std::string note() const;
+  // The output's downstream tally, read from its sink (design 12.3).
+  Tally tally() const { return sink_ ? sink_->tally() : Tally{}; }
 
   uint64_t delivered() const { return delivered_.load(); }  // atomic: incremented on the worker thread
   // Audio packets handed to the sink, cumulative like delivered(). A throwing audio sink does not

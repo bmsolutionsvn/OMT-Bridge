@@ -62,6 +62,16 @@ bool SourceHub::running() const {
   return running_;
 }
 
+void SourceHub::setDownstreamTally(Tally tally) {
+  std::lock_guard l(mu_);
+  downstream_ = tally;
+}
+
+Tally SourceHub::downstreamTally() const {
+  std::lock_guard l(mu_);
+  return downstream_;
+}
+
 void SourceHub::setOnRunningChanged(RunningChanged cb) {
   std::lock_guard l(mu_);
   onRunningChanged_ = std::move(cb);

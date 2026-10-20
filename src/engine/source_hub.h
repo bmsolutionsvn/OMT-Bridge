@@ -13,6 +13,7 @@
 #include "core/alpha_gate.h"
 #include "core/audio.h"
 #include "core/frame.h"
+#include "core/tally.h"
 
 namespace ob {
 
@@ -35,6 +36,9 @@ class SourceHub {
   bool thumbnailWanted() const;
 
   bool running() const;
+  // The OR of every fed output's downstream tally (design 12.3); display/upstream use only.
+  void setDownstreamTally(Tally tally);
+  Tally downstreamTally() const;
 
   // Called once per running transition. The engine starts or stops the input adapter here.
   // Install this BEFORE the first demand change: the setter does not replay the current state,
@@ -79,6 +83,7 @@ class SourceHub {
   int refs_ = 0;
   bool thumbnailWanted_ = false;
   bool running_ = false;
+  Tally downstream_{};
   RunningChanged onRunningChanged_;
 
   std::shared_ptr<const Frame> latest_;

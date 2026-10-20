@@ -35,6 +35,8 @@ class OmtSource {
   void start();  // idempotent; opens the receiver; Connecting (Offline if it cannot open)
   void stop();   // idempotent; joins both threads, closes the receiver; Ready
   bool running() const;
+  // Stored atomically; the video thread applies it with Receiver::setTally (design 12.3).
+  void setTally(bool program, bool preview);
 
  private:
   void stopImpl(bool notify);
@@ -46,6 +48,8 @@ class OmtSource {
   StateSink onState_;
   AudioSink onAudio_;
   std::atomic<bool> stop_{false};
+  std::atomic<uint32_t> tally_{0};  // bit 0 program, bit 1 preview
+  std::atomic<bool> tallyDirty_{false};
   mutable std::mutex mu_;   // fields only; never join while holding it
   std::mutex lifecycle_;    // serialises whole start()/stop() bodies
   std::unique_ptr<OmtReceiverHolder> rx_;  // guarded by mu_; alive only while running
