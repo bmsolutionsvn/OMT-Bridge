@@ -86,8 +86,7 @@ TEST_CASE("toStraight divides by alpha and clamps") {
   ob::toStraight(mid);
   CHECK(mid.uyvy[0] >= 233);
   CHECK(mid.uyvy[0] <= 235);
-  CHECK(mid.uyvy[1] >= 251);           // clamps to 240
-  CHECK(mid.uyvy[1] <= 240);
+  CHECK(mid.uyvy[1] == 240);           // 251.5 clamps to the chroma legal maximum
 
   auto low = make(20, 130, 130, 10);   // 16+(20-16)/0.039 ~= 118
   ob::toStraight(low);
