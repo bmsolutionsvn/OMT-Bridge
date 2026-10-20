@@ -110,6 +110,7 @@ add_executable(ob_tests
   tests/engine_test.cpp
   tests/ndi_runtime_test.cpp
   tests/ndi_sink_test.cpp
+  tests/ndi_loopback_test.cpp
 )
 target_include_directories(ob_tests PRIVATE tests src)
 target_link_libraries(ob_tests PRIVATE doctest::doctest)
