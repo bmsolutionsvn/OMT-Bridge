@@ -37,7 +37,7 @@ class NdiSink : public Sink {
   Output config_;
   std::string name_;
   std::string openNote_;
-  std::string frameNote_;
+  Frame scratch_;  // reused by the straight-alpha conversion; guarded by mu_
   std::unique_ptr<NdiSenderHolder> sender_;
 };
 

@@ -24,6 +24,8 @@ NdiSink::~NdiSink() = default;
 // changed, comparing against the previously stored config.
 void NdiSink::configure(const Output& output, const std::string& advertisedName) {
   std::lock_guard l(mu_);
+  // sender_ in the comparison means a failed open is retried by the next identical configure;
+  // that is the only recovery path without a restart.
   const bool same = sender_ && config_.target == output.target && config_.codec == output.codec &&
                     config_.quality == output.quality && name_ == advertisedName;
   config_ = output;
@@ -35,7 +37,6 @@ void NdiSink::configure(const Output& output, const std::string& advertisedName)
 void NdiSink::openLocked() {
   sender_.reset();
   openNote_.clear();
-  frameNote_.clear();
   if (!ensureNdi()) {
     openNote_ = "the NDI runtime could not start";
     return;  // no sender: send() drops frames, which is correct for an unavailable target
@@ -65,13 +66,12 @@ void NdiSink::deliver(const std::shared_ptr<const Frame>& frame) {
   std::lock_guard l(mu_);
   // No sender (open failed): send() drops the frame. The decision is still made here so the
   // test seam sees it, matching OmtSink.
-  frameNote_.clear();  // the label describes THIS frame
   const bool alpha = frame->format.alpha && config_.alpha != AlphaMode::Off;
   if (alpha && frame->premultiplied) {
     // NDI is straight only, so the copy is the price; the hub's frame stays shared and untouched.
-    Frame scratch = *frame;
-    toStraight(scratch);
-    send(scratch, alpha);
+    scratch_ = *frame;  // reuses the buffer; the hub's frame stays shared and untouched
+    toStraight(scratch_);
+    send(scratch_, alpha);
     return;
   }
   send(*frame, alpha);
@@ -116,7 +116,7 @@ void NdiSink::deliverAudio(const std::shared_ptr<const AudioFrame>& frame) {
 
 std::string NdiSink::note() const {
   std::lock_guard l(mu_);
-  return openNote_.empty() ? frameNote_ : openNote_;
+  return openNote_;
 }
 
 Tally NdiSink::tally() const {
