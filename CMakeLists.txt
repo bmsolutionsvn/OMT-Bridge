@@ -79,7 +79,7 @@ target_link_libraries(ob_engine PUBLIC bcrypt)
 
 # NDI is optional (spec 14.3): the adapters compile only when the SDK was found.
 if(OB_WITH_NDI)
-  target_sources(ob_engine PRIVATE src/engine/ndi_runtime.cpp)
+  target_sources(ob_engine PRIVATE src/engine/ndi_runtime.cpp src/engine/ndi_source.cpp)
   target_link_libraries(ob_engine PUBLIC NDI::NDI)
   target_compile_definitions(ob_engine PUBLIC OB_WITH_NDI=1)
 endif()
