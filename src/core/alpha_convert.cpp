@@ -24,11 +24,12 @@ void toStraight(Frame& frame) {
     for (size_t x = 0; x < width; x += 2) {
       const float a0 = static_cast<float>(alpha[x]) / 255.0f;
       const float a1 = static_cast<float>(alpha[x + 1]) / 255.0f;
-      row[x * 2] = a0 > 0.0f ? unmultiply(row[x * 2], 16, 16, 235, a0) : 16;
-      row[x * 2 + 2] = a1 > 0.0f ? unmultiply(row[x * 2 + 2], 16, 16, 235, a1) : 16;
       const float mean = (a0 + a1) / 2.0f;
-      row[x * 2 + 1] = mean > 0.0f ? unmultiply(row[x * 2 + 1], 128, 16, 240, mean) : 128;
-      row[x * 2 + 3] = mean > 0.0f ? unmultiply(row[x * 2 + 3], 128, 16, 240, mean) : 128;
+      // Canonical UYVY: [U][Y0][V][Y1] per pair.
+      row[x * 2] = mean > 0.0f ? unmultiply(row[x * 2], 128, 16, 240, mean) : 128;
+      row[x * 2 + 1] = a0 > 0.0f ? unmultiply(row[x * 2 + 1], 16, 16, 235, a0) : 16;
+      row[x * 2 + 2] = mean > 0.0f ? unmultiply(row[x * 2 + 2], 128, 16, 240, mean) : 128;
+      row[x * 2 + 3] = a1 > 0.0f ? unmultiply(row[x * 2 + 3], 16, 16, 235, a1) : 16;
     }
   }
   frame.premultiplied = false;
