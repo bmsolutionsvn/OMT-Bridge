@@ -1,8 +1,8 @@
 #pragma once
 // Opaque-alpha detection (design 9.2). A source that marks frames as alpha while every pixel is
-// opaque would double an OMT-HX coded picture for nothing, so alpha is dropped — but only after
-// two seconds of continuous opacity. The hysteresis is required: changing alpha changes the HX
-// coded height, so omthx reopens the encoder and forces a keyframe. Alpha must not flap.
+// opaque would carry an HX alpha stream for nothing, so alpha is dropped — but only after
+// two seconds of continuous opacity. The hysteresis is required: adding or removing the HX alpha
+// stream reopens the encoder and forces a keyframe. Alpha must not flap.
 #include <chrono>
 #include <cstddef>
 #include <cstdint>

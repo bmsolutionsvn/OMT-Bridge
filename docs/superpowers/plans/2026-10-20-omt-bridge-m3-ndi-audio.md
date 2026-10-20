@@ -6,7 +6,7 @@
 
 **Architecture:** The M2 engine already moves one shared UYVY/UYVA frame per source through a sink-owning row. M3 adds a second, independent media slot for audio (source slot → per-output audio queue, so audio never gates video), two NDI adapters behind the existing `SourceHub`/`Sink` seams, one pure `toStraight()` conversion for NDI output, and tally read from each sink and OR-ed per source. NDI remains optional (`OB_WITH_NDI`), so every NDI source file and test is compiled only when the SDK is found.
 
-**Tech Stack:** C++20, MSVC, CMake + vcpkg, NDI 6 SDK (`C:/Program Files/NDI/NDI 6 SDK`, or `NDI_SDK_DIR`), OMT-HX `ae96aa1`, doctest.
+**Tech Stack:** C++20, MSVC, CMake + vcpkg, NDI 6 SDK (`C:/Program Files/NDI/NDI 6 SDK`, or `NDI_SDK_DIR`), OMT-HX `e21dc52`, doctest.
 
 **Spec:** `docs/superpowers/specs/2026-10-19-omt-bridge-design.md` §6.3–§10, §12.1–§12.3, §14.3, §15.1–§15.3, §18.1, §20.
 

@@ -7,7 +7,7 @@ source's rate), then checked against the workspace: OMT-HX `b58414b` already pro
 UYVY/UYVA API with tests, libomt and NDI share the `UYVY`/`UYVA`/`P216`/`PA16` FourCC
 values, and the OMT-HX measurement figures are real. Updated again 2026-10-19 for OMT-HX
 `ae96aa1`: one frame less latency per HX hop, new measured figures (6.3, 16), and the
-coded-relay and GPU re-code paths the library now has (18.8, 18.9).
+coded-relay and GPU re-code paths the library now has (18.8, 18.9). Updated again 2026-10-21 for OMT-HX `e21dc52`: HX alpha travels as a separate VMX stream (9), and the library gained a C API for the OBS plugin.
 Upstream repository: https://github.com/bmsolutionsvn/OMT-Bridge (MIT).
 
 This is a new product in the BM Solutions ecosystem, beside BreadStream, BreadCall,
@@ -90,7 +90,7 @@ Locked with the owner on 2026-10-19.
 - Audio passthrough with the source's channel count and sample rate.
 - Tally passed upstream: a source is on air when an output it feeds is on air downstream.
 - Use of the UYVY/UYVA API `omthx` already provides (OMT-HX `b58414b`, additive to its
-  BGRA API and already under its own tests), at OMT-HX `ae96aa1` or later (14.3).
+  BGRA API and already under its own tests), at OMT-HX `e21dc52` or later (14.3).
 
 ### 3.2 Out of v1, named so nothing is assumed
 
@@ -224,7 +224,7 @@ with its own tests:
   when the alpha plane follows the UYVY plane at `stride / 2`, which is exactly OMT's and
   NDI's `UYVA` layout). HX mode makes the NV12 picture with **no colour matrix**
   (`pure.cpp`, `packUyvy`): luma through a range table, chroma averaged vertically
-  4:2:2 → 4:2:0, alpha stacked (OMT-HX §7). Straight input is premultiplied in YUV
+  4:2:2 → 4:2:0, alpha by VMX as a separate stream (OMT-HX §7). Straight input is premultiplied in YUV
   (`Y' = 16 + (Y−16)·a`, `C' = 128 + (C−128)·a`), equal to premultiplying in RGB because
   the matrix is linear; chroma uses the mean alpha of the pixels it covers.
 - `Receiver(address, PixelFormat::Uyvy)` returns the 4:2:2 picture in `VideoFrame::uyvy`,
@@ -239,7 +239,7 @@ OMT-HX publishes no separate no-alpha or unpack timings, so none are quoted here
 measures the bridge's own per-output cost (Section 16).
 
 OMT-HX's tests already cover the UYVY/UYVA round trip; OMT Bridge's task is to **consume**
-this API, not add it. Pin OMT-HX at `ae96aa1` or later (14.3).
+this API, not add it. Pin OMT-HX at `e21dc52` or later (14.3).
 
 ### 6.4 SourceHub
 
@@ -331,19 +331,21 @@ that `Frame`; BreadCamera's own copies are not changed.
 Alpha is a per-frame flag carried on the canonical frame.
 
 - **Full OMT** carries alpha as `UYVA` (VMX codes YUV 4:2:2:4), free.
-- **OMT-HX** carries optional alpha as a stacked plane (a 1080p alpha source codes as
-  1920×2176). It doubles the coded **pixels**, not the bits: `omthx` adds 25 % bitrate for
-  alpha (`targetBitrate`, OMT-HX `src/pure.cpp`) because the alpha half is flat with neutral
-  chroma; 1080p60 alpha measured 31.8 Mbps. The real cost is codec and CPU throughput
-  (12.6 ms to send, 13.1 ms to receive per 1080p60 alpha frame on the test PC, against a
-  16.7 ms frame). It is lossy. Design: OMT-HX §7.
+- **OMT-HX** carries optional alpha as a **separate VMX-coded plane** since OMT-HX
+  `e21dc52` (2026-10-21). The GPU codes the display picture alone; the CPU codes the
+  `Width × Height` alpha plane with `VMX_EncodeY8` at High quality, skipping a plane that did not
+  change. An earlier OMT-HX stacked alpha under the fill as a 1920×2176 picture; that is no
+  longer how the library sends it, although a receiver reads either. Measured at 1080p60 HEVC
+  (OMT-HX 2026-10-20): 36.9 Mbps with alpha, 60 fps, 21.5 ms end-to-end delay, about 1 ms of
+  alpha work at each end. The alpha plane is lossy (mean error 0.037 at High), intra-only, so it
+  cannot drift. Outside VMX's 16x16..7680x4320 range, omthx falls back to stacked alpha; the API is the same either way. Design: OMT-HX §7.
 - **NDI (Full)** carries alpha as `UYVA` (SpeedHQ 4:2:2:4).
-- **NDI|HX** carries alpha the same way OMT-HX does: NDI's codec matrix describes HX2/HX3
+- **NDI|HX** carries alpha the same way older OMT-HX did: NDI's codec matrix describes HX2/HX3
   alpha as *YUVA 4:2:0:4, "implemented by vertically stacking the video and alpha frames
   into a single frame before compression"*, produced by NDI Bridge, TriCaster, Vectar Plus
   and Vizrt Connect. The NDI SDK decodes it; the bridge receives `UYVA`.
 
-OMT-HX's packing is therefore already NDI|HX's packing. There is no better scheme to
+OMT-HX's older stacked packing is NDI|HX's packing; the VMX stream is not, so an NDI|HX alpha source is decoded to UYVA by the NDI SDK and re-coded here. There is no better scheme to
 copy; the optimisations are in 9.2 and 9.3.
 
 ### 9.1 Premultiplication: carry the flag, convert at one edge
@@ -378,14 +380,13 @@ is inherent to 8-bit lossy input and accepted.
 
 ### 9.2 Opaque alpha is dropped automatically
 
-Many senders mark frames as alpha while every pixel is opaque. Carrying that alpha would
-double the HX coded picture for nothing. Under `alpha: Auto`, the SourceHub scans the alpha
+Many senders mark frames as alpha while every pixel is opaque. Carrying that alpha would add an HX alpha stream for nothing. Under `alpha: Auto`, the SourceHub scans the alpha
 plane (stopping at the first value below 255):
 
 - any value below 255 → alpha **on**, immediately;
 - all 255 for **2 s** of frames → alpha **off**.
 
-The hysteresis is required: changing `alpha` changes the HX coded height, so `omthx`
+The hysteresis is required: changing `alpha` adds or removes the HX alpha stream, so `omthx`
 reopens the encoder and forces a keyframe (`Sender::Impl::openEncoder`, OMT-HX
 `src/link.cpp`). Alpha must not flap. A row whose alpha was dropped this way shows
 **"alpha opaque"**, not "alpha dropped", because nothing was lost.
@@ -395,6 +396,7 @@ reopens the encoder and forces a keyframe (`Sender::Impl::openEncoder`, OMT-HX
 Copied from NDI Bridge, whose docs say H.264 alpha is HD only, while HEVC covers every
 reasonable resolution with or without alpha. An OMT-HX H.264 output whose source is above
 1080p with alpha drops alpha and shows **"alpha dropped — H.264 above 1080p, use HEVC"**.
+**Changed by OMT-HX `e21dc52`:** HX alpha is no longer coded by the fill encoder, so the HD-only limit is no longer a library restriction (VMX alpha accepts up to 7680x4320). The bridge keeps the rule for NDI Bridge parity and the existing row label; relaxing it is an owner decision, not an adaptation to the new library.
 HEVC outputs are bounded only by what the encoder opens; a failure to open is a system
 error naming the coded size.
 
@@ -523,7 +525,7 @@ virtual camera, preview service.
 
 | Dependency | How | Notes |
 |---|---|---|
-| OMT-HX | git submodule; `add_subdirectory`; `target_link_libraries(... omthx)`; `omthx_copy_runtime(...)` | brings `libomt.dll`, `libvmx.dll`; **pinned at `ae96aa1` or later**: the UYVY/UYVA API (6.3) and the same-call encoder packets that took a frame out of every HX hop (16) |
+| OMT-HX | git submodule; `add_subdirectory`; `target_link_libraries(... omthx)`; `omthx_copy_runtime(...)` | brings `libomt.dll`, `libvmx.dll`; **pinned at `e21dc52` or later**: the UYVY/UYVA API (6.3), the same-call encoder packets that took a frame out of every HX hop (16), and HX alpha as a separate VMX stream (9) |
 | FFmpeg (`avcodec`, `swscale`, `nvcodec`, `amf`) | vcpkg | required by OMT-HX |
 | NDI 6 SDK | found where installed, like BreadCamera's `cmake/FindNDI.cmake` (`NDI_SDK_DIR`, else `C:/Program Files/NDI/NDI 6 SDK`); the runtime DLL is copied beside the exe | guarded by `OB_WITH_NDI`, mirroring `BC_WITH_NDI`. The `BreadStudio/breadstudio/ndi/ndi-sdk` copy is **headers only** and cannot be linked, so it is not the pattern to follow (18.2, 18.5) |
 | Qt 6 (`qtbase`, Widgets) | vcpkg | **LGPLv3 — dynamically linked; Qt DLLs shipped, never statically linked** |
@@ -573,7 +575,7 @@ library rather than with itself:
 - **Premultiplied to NDI:** an OMT-HX alpha source into an NDI output, received back by
   an NDI source; assert the colour of a 50 % alpha patch is the straight value.
 - **Opaque alpha:** an alpha source with all-255 alpha into an OMT-HX output; assert the
-  coded height drops to the display height after 2 s and the row shows "alpha opaque".
+  receiver stops reporting alpha after 2 s (the HX alpha stream is gone) and the row shows "alpha opaque".
 
 ### 15.3 Manual checks
 
@@ -625,6 +627,8 @@ library rather than with itself:
   encode/decode, so it is a chain figure rather than the bridge's own latency. 1440p, 4K,
   longer soaks and the 2/4-output points remain unmeasured.
 
+  **Re-measured after OMT-HX `e21dc52` (2026-10-21).** The same `scripts/m2-e2e.ps1` run with HX alpha as a VMX stream: 57.6 fps averaged over 12 s, 38.14 Mbps (up from about 31.9 Mbps with the stacked plane), engine 24.7 ms of CPU per output frame, delay max 168 ms. Bandwidth is higher and the double-height code is gone.
+
   **Verified, M3 (2026-10-21).** The NDI path is proven in-process by the `ob_tests` loopback
   (`scripts/m3-ndi-smoke.ps1`): an `NdiSink` advertises and an `NdiSource` finds it. A 64x36
   `UYVA` frame with three alpha bands (255/0/128) arrives with every band intact, which pins
@@ -658,7 +662,7 @@ library rather than with itself:
 | Risk | Mitigation |
 |---|---|
 | NDI `UYVA` turns out premultiplied → fringing on keyed NDI | `BGRA` is documented straight; `UYVA` is the one assumption, isolated in `toStraight()` and the 9.1 table, checked in the smoke test before M3 ships (18.1) |
-| A newer OMT-HX breaks BreadCamera or BreadStudio | Additive API only; OMT-HX's tests must pass, and both apps are rebuilt and tested against the pinned commit (done for `ae96aa1`) |
+| A newer OMT-HX breaks BreadCamera or BreadStudio | Additive API only; OMT-HX's tests must pass, and both apps are rebuilt and tested against the pinned commit (last done at `ae96aa1`; `e21dc52` needs a BreadCamera/BreadStudio rebuild before either ships) |
 | CPU work per HX hop caps usable outputs at a handful | UYVY path removes the colour matrix; remaining cost measured in M2 and documented; GPU converter already lifted into the repo for the next milestone |
 | Alpha flapping on a source that is opaque some of the time | 2 s hysteresis before dropping alpha (9.2) |
 | Qt LGPL and NDI SDK redistribution terms | Qt dynamically linked only; NDI runtime shipped per SDK terms, or required as a prerequisite if terms do not allow it (18.2) |
