@@ -230,12 +230,30 @@ try {
     cores = if ($wall.Elapsed.TotalSeconds) { $cpuSeconds / $wall.Elapsed.TotalSeconds } else { 0 }
     msPerOutputFrame = if ($nominalFrames) { $cpuSeconds * 1000 / $nominalFrames } else { 0 }
   }
+
+  # A correctly sized BMP alone does not certify the run: require enough samples, a real
+  # frame rate, the requested alpha, and a live engine.
+  $minSamples = [Math]::Max(3, $Seconds - 3)
+  if ($rates.Count -lt $minSamples) {
+    throw "receiver reported only $($rates.Count) seconds; need at least $minSamples"
+  }
+  $minFps = [Math]::Max(1, [int]($Fps * 0.9))
+  if ($metrics.avgFps -lt $minFps) {
+    throw ("receiver averaged {0:N1} fps, below 90% of {1}" -f $metrics.avgFps, $Fps)
+  }
+  if (-not $NoAlpha -and -not $alphaSeen) {
+    throw "alpha was requested but the receiver never reported +alpha"
+  }
+  if ($engineProcess.HasExited) {
+    throw "the engine exited during the run (code $($engineProcess.ExitCode))"
+  }
 } catch {
   $failure = $_
 } finally {
   foreach ($process in @($recvProcess, $engineProcess, $sendProcess)) {
     if ($process -and -not $process.HasExited) {
       Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      [void]$process.WaitForExit(3000)  # release log/dump handles before the dir is removed
     }
   }
 }

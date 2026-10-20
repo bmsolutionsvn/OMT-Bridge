@@ -616,11 +616,11 @@ library rather than with itself:
   on the bridge's UYVY path.
 
   **Measured, M2 (same 1-output runs).** The bridge held real time at 1080p60 alpha:
-  `omthx-recv` reported 56-62 fps after the first (keyframe-wait) second, 56.8-57.5 fps
+  `omthx-recv` reported 55-62 fps after the first (keyframe-wait) second, 56.8-57.5 fps
   averaged over all 12 s, at **30.4-32.9 Mbps** per second and **31.5-32.0 Mbps** averaged on the wire. Receiver decode measured
   12.5-19.2 ms per frame. End-to-end delay, from the sender's timestamp to the receiver's
   clock across both HX hops, moved between **59 and 195 ms average per second, with
-  per-second maxima up to 202 ms**; it did not settle at one value and both runs ended
+  per-second maxima up to 470 ms**; it did not settle at one value and the runs ended
   higher than they began. That figure includes the sender's and receiver's own
   encode/decode, so it is a chain figure rather than the bridge's own latency. 1440p, 4K,
   longer soaks and the 2/4-output points remain unmeasured.
