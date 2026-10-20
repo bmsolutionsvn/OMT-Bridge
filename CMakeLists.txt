@@ -85,6 +85,7 @@ target_link_libraries(ob_shell PUBLIC ob_core)
 # ---- tests ----
 add_executable(ob_tests
   tests/main.cpp
+  tests/audio_test.cpp
   tests/frame_test.cpp
   tests/signal_state_test.cpp
   tests/bounded_queue_test.cpp
