@@ -19,6 +19,10 @@ void OutputRow::start() {
   // reported Offline by the engine. `delivered_` is NOT reset — it is a cumulative stat.
   faulted_.store(false);
   live_.store(false);
+  {
+    std::lock_guard l(faultMu_);
+    faultNote_.clear();
+  }
   // A row can be started again after stop() ("Stop all outputs", then resume): stop() closed the
   // queue, so reopen it before the worker starts — otherwise its first pop returns nullopt, sees
   // `closed()`, and the worker exits immediately, delivering nothing.
@@ -33,6 +37,22 @@ void OutputRow::stop() {
 }
 
 void OutputRow::offer(std::shared_ptr<const Frame> frame) { queue_.push(std::move(frame)); }
+
+std::string OutputRow::note() const {
+  {
+    std::lock_guard l(faultMu_);
+    if (!faultNote_.empty()) return faultNote_;
+  }
+  return sink_ ? sink_->note() : std::string{};
+}
+
+bool OutputRow::live() const {
+  if (!live_.load()) return false;
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                       .count();
+  return now - lastDeliverMs_.load() < 2000;
+}
 
 void OutputRow::configure(const Output& output, const std::string& advertisedName) {
   config_ = output;  // configuration-only copy; Output::operator== is config-only by design
@@ -52,12 +72,27 @@ void OutputRow::run() {
     // never affects another row or its SourceHub (the header's promise).
     try {
       if (sink_) sink_->deliver(*f);
+    } catch (const std::exception& e) {
+      {
+        std::lock_guard l(faultMu_);
+        faultNote_ = e.what();
+      }
+      faulted_.store(true);
+      live_.store(false);
+      return;
     } catch (...) {
+      {
+        std::lock_guard l(faultMu_);
+        faultNote_ = "sink failed";
+      }
       faulted_.store(true);
       live_.store(false);
       return;
     }
     ++delivered_;
+    lastDeliverMs_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count());
     live_.store(true);
   }
 }

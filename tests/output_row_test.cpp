@@ -202,3 +202,26 @@ TEST_CASE("a row with no sink is legal and never faults") {
   CHECK(row.delivered() == 1u);
   CHECK_FALSE(row.faulted());
 }
+
+TEST_CASE("a faulted row keeps the sink's message and revives on restart") {
+  std::atomic<bool> fail{true};
+  ob::OutputRow row("o1", std::make_unique<LambdaSink>([](auto&) {}));
+  ob::Output o;
+  o.id = "o1";
+  row.configure(o, "A");
+
+  auto throwing = std::make_unique<LambdaSink>([&](const std::shared_ptr<const ob::Frame>&) {
+    if (fail.load()) throw std::runtime_error("encoder refused 4096x2160");
+  });
+  ob::OutputRow faulting("o2", std::move(throwing));
+  faulting.configure(o, "A");
+  faulting.start();
+  faulting.offer(frame(0));
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (!faulting.faulted() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  faulting.stop();
+  CHECK(faulting.faulted());
+  CHECK(faulting.note() == "encoder refused 4096x2160");
+  (void)row;
+}

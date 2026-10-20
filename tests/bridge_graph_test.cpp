@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -18,7 +19,15 @@ class CountingSink : public ob::Sink {
   void deliver(const std::shared_ptr<const ob::Frame>&) override { ++count; }
   int count = 0;
 };
-}  // namespace
+
+class FaultOnceSink : public ob::Sink {
+ public:
+  void deliver(const std::shared_ptr<const ob::Frame>&) override {
+    if (fail) throw std::runtime_error("open failed");
+  }
+  bool fail = true;
+};
+}  // namespace  // namespace
 
 TEST_CASE("one source feeding two outputs counts two refs on one hub (N x M)") {
   ob::Bridge b;
@@ -291,5 +300,33 @@ TEST_CASE("clearing an output's source stops the row and clears its liveness") {
 
   REQUIRE(graph.rowStats("o1").has_value());
   CHECK_FALSE(graph.rowStats("o1")->live);
+  graph.stop();
+}
+
+TEST_CASE("changing an output's configuration revives a faulted row") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "A"});
+
+  ob::BridgeGraph graph([](const ob::Output&, const std::string&) -> std::unique_ptr<ob::Sink> {
+    return std::make_unique<FaultOnceSink>();
+  });
+  graph.apply(b);
+  graph.start();
+
+  auto f = std::make_shared<ob::Frame>();
+  f->format = ob::VideoFormat{4, 2, 60, 1, false};
+  f->uyvy.assign(f->lumaBytes(), 0x10);
+  graph.publish("s1", f);
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (!(graph.rowStats("o1") && graph.rowStats("o1")->faulted) &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  REQUIRE(graph.rowStats("o1").has_value());
+  CHECK(graph.rowStats("o1")->faulted);
+
+  b.outputs[0].name = "B";  // operator fixes the configuration
+  graph.apply(b);
+  CHECK_FALSE(graph.rowStats("o1")->faulted);
   graph.stop();
 }

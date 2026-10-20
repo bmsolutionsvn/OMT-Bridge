@@ -52,10 +52,12 @@ void BridgeGraph::apply(const Bridge& bridge) {
         found->second.row->configure(o, advertised);
       } else {
         const bool sourceChanged = found->second.row->sourceId() != o.sourceId;
+        const bool configChanged = found->second.row->config() != o;
         found->second.row->configure(o, advertised);
-        // An edit detached (or retargeted) this row: restart it below, outside mu_, so a stopped or
-        // cleared queue cannot keep claiming the liveness of the source it used to read.
-        if (sourceChanged && started_) toRestart.push_back(found->second.row.get());
+        // Restart below, outside mu_: a retargeted row must not keep the old source's liveness, and
+        // a faulted row gets a fresh worker when the operator changes its configuration.
+        if (started_ && (sourceChanged || (configChanged && found->second.row->faulted())))
+          toRestart.push_back(found->second.row.get());
       }
     }
 

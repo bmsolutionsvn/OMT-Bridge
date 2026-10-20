@@ -55,7 +55,14 @@ int main(int argc, char** argv) {
 
   if (!bridgeFile.empty()) {
     if (auto b = ob::loadBridge(bridgeFile)) {
-      engine.apply(*b);
+      try {
+        engine.apply(*b);
+      } catch (const std::exception& e) {
+        // Applying a saved bridge can fail (thread creation, allocation). Report it like a start
+        // failure: an uncaught exception would terminate with no message.
+        std::fprintf(stderr, "engine apply failed: %s\n", e.what());
+        return 1;
+      }
     } else {
       std::fprintf(stderr, "warning: could not read %s; starting with an empty bridge\n",
                    bridgeFile.c_str());

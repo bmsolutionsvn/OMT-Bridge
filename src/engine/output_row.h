@@ -2,9 +2,11 @@
 // One output (design 6.5). Reads its source's newest frame and hands it to a sink. Its own
 // drop-oldest queue means a slow or failed sink can never block another row or its SourceHub.
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -56,13 +58,17 @@ class OutputRow {
 
   const std::string& id() const { return id_; }
   const std::string& sourceId() const { return config_.sourceId; }
-  std::string note() const { return sink_ ? sink_->note() : std::string{}; }
+  // Read only by the graph, under its mutex, so an apply() can tell a configuration edit from a
+  // re-apply of the same model.
+  const Output& config() const { return config_; }
+  // The fault message when the sink threw, else the sink's own note.
+  std::string note() const;
 
   uint64_t delivered() const { return delivered_.load(); }  // atomic: incremented on the worker thread
   uint64_t dropped() const { return queue_.dropped(); }
-  // True while the running worker has delivered at least one frame in this run. Per-run, not
-  // cumulative: start()/stop() and a fault reset it, so a stopped or failed row is not "live".
-  bool live() const { return live_.load(); }
+  // True while the running worker has delivered a frame recently. Per-run and decaying: start()/
+  // stop()/a fault reset it, and a stall (no frame for 2 s) reports not-live without a stop.
+  bool live() const;
   // True once the sink threw. The worker then stops delivering (it does not spin retrying); the
   // engine reads this to mark this output Offline, so one failed sink affects only its own row.
   bool faulted() const { return faulted_.load(); }
@@ -78,8 +84,12 @@ class OutputRow {
   // Read by the test (and later the state snapshot) on a different thread from run(), which
   // does the increment: it must be atomic, not a plain uint64_t.
   std::atomic<uint64_t> delivered_ = 0;
+  std::atomic<int64_t> lastDeliverMs_{0};
   std::atomic<bool> live_ = false;
   std::atomic<bool> faulted_ = false;
+  // The worker's fault message; guarded because note() reads it from another thread.
+  mutable std::mutex faultMu_;
+  std::string faultNote_;
 };
 
 }  // namespace ob

@@ -51,7 +51,7 @@ void OmtSink::openLocked() {
   } catch (...) {
     sender_.reset();
     openNote_ = "cannot open OMT output";
-    throw;
+    return;  // no sender: the row reports the note and stays not-live, and apply() survives
   }
 }
 
