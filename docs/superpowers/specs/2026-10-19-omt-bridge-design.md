@@ -432,6 +432,12 @@ soft edges. Compositing straight colour onto black belongs with the alpha-conver
 - For **OMT-HX** the keyframe comes for free: `omthx::Receiver` discards frames until the
   first keyframe, so its first delivered frame is a clean one. For **Full OMT** and
   **NDI** every frame is intra, so the first delivered frame is used as-is.
+- Wire format: `OBT1`, a little-endian `u16` JSON-header length, the header
+  `{"sourceId","width","height"}`, then BGRA rows. The picture is 160 px on its long edge, with the
+  source's aspect ratio.
+- The engine sends previews only while at least one control client is connected, at the
+  `thumbnailIntervalMs` setting. That demand also keeps a source adapter running when no
+  output references it (6.4).
 
 ## 12. States, tally and errors
 
@@ -459,7 +465,8 @@ long as the bridge runs.
 - The SourceHub ORs `program` and `preview` across every output fed by its source.
 - It sets the result upstream: `omthx::Receiver::setTally` for OMT and OMT-HX sources,
   `NDIlib_recv_set_tally` for NDI sources.
-- Polled with the stats, not per frame.
+- Polled with the stats, not per frame. The UI shows the ORed result on the source row as
+  `PGM` (red) or `PVW` (amber).
 
 ## 13. UI (Qt Widgets)
 
@@ -473,6 +480,8 @@ is a dialog. English only. Window title `OMT Bridge`.
   Toolbar: **Add source** (discovery list, or type an address).
 - **Outputs** pane: one row per Output — name, a **source picker**, target + codec +
   quality, the state pill, and live `fps / Mbps` in mono. Toolbar: **Add output**.
+- A persistent error band at the top of either pane lists adapter and sink failures until they
+  clear (12.2). The Outputs row also carries the per-frame note (alpha dropped, 9.3).
 - **Matrix view** (a toggle): rows = Sources, columns = Outputs, a filled cell where an
   Output takes that Source. Read-mostly; assignments are edited in the Outputs pane.
 - **Status bar:** engine state (running / restarting / stopped) and total in/out bitrate.
@@ -630,6 +639,10 @@ library rather than with itself:
   longer soaks and the 2/4-output points remain unmeasured.
 
   **Re-measured after OMT-HX `e21dc52` (2026-10-21).** The same `scripts/m2-e2e.ps1` run with HX alpha as a VMX stream: 57.6 fps averaged over 12 s, 38.14 Mbps (up from about 31.9 Mbps with the stacked plane), engine 24.7 ms of CPU per output frame, delay max 168 ms. Bandwidth is higher and the double-height code is gone.
+
+**M5 soak (2026-10-21), one minute, 720p30 HX with alpha.** `scripts/m5-soak.ps1`: 29.8 fps
+averaged, engine working set 127.7 MB after warm-up to 131.9 MB peak, 0.43 cores. The 10-minute
+and multi-output soaks remain to be run.
 
   **Verified, M3 (2026-10-21).** The NDI path is proven in-process by the `ob_tests` loopback
   (`scripts/m3-ndi-smoke.ps1`): an `NdiSink` advertises and an `NdiSource` finds it. A 64x36

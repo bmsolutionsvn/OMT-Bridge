@@ -10,9 +10,10 @@ v1 is a local converter/proxy; the WAN tunnel (Host/Join) is v2.
 
 ## Status
 
-M0–M4 are done. The engine bridges OMT, OMT-HX and NDI in both directions with audio, alpha and
-tally. The Qt shell drives it: Sources and Outputs panes, a matrix view, live state and fps/Mbps,
-settings, confirm dialogs and the Bridge file.
+M0–M5 are implemented. The engine bridges OMT, OMT-HX and NDI in both directions with audio,
+alpha and tally. The Qt shell drives it: Sources and Outputs panes with live previews, a matrix
+view, signal states and downstream tally, fps/Mbps, settings, persistent error bands, alpha
+labels, confirm dialogs and the Bridge file.
 
 Run the shell from `build\release`:
 
@@ -30,8 +31,11 @@ The control commands are `state`, `discover`, `set-running`, `add-source`, `set-
 `remove-source`, `add-output`, `set-output`, `set-output-source`, `remove-output` and
 `set-settings`.
 
-M5 is next: thumbnails, tally on screen, persistent error blocks and a soak run. NDI remains
-optional at build time (`OB_WITH_NDI`, auto-detected; off in CI).
+Proofs: `scripts\m2-e2e.ps1` (OMT-HX loopback with alpha), `scripts\m3-ndi-smoke.ps1` (NDI
+self-loop), `scripts\m5-ndi-to-omt.ps1 -Source "<NDI name>" -Target OMT|OMT-HX` (NDI cross-family;
+needs a test pattern or other NDI source), and `scripts\m5-soak.ps1 -Minutes 10`.
+
+NDI remains optional at build time (`OB_WITH_NDI`, auto-detected; off in CI).
 
 ## Build
 
