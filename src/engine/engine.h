@@ -13,6 +13,7 @@
 #include "engine/bridge_graph.h"
 #include "engine/command_router.h"
 #include "engine/control_server.h"
+#include "engine/ndi_source.h"
 #include "engine/omt_sink.h"
 #include "engine/omt_source.h"
 
@@ -20,7 +21,8 @@ namespace ob {
 
 class Engine {
  public:
-  Engine(int controlPort, std::string token, std::string bridgeFile = {});
+  // adapters is false only in unit tests: it keeps the graph deterministic and opens no device.
+  Engine(int controlPort, std::string token, std::string bridgeFile = {}, bool adapters = true);
   ~Engine();
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -33,7 +35,8 @@ class Engine {
 
   // A source's runtime view, or nullopt when no such source is configured. Reads the runtime map
   // and the hub, never the control mutex — safe from a reply thread.
-  std::optional<SourceRuntime> sourceRuntime(const std::string& id) const;
+  // Non-const: a state poll also refreshes tally, which pushes it to the adapters.
+  std::optional<SourceRuntime> sourceRuntime(const std::string& id);
   std::optional<OutputRuntime> outputRuntime(const std::string& id) const;
 
   // Starts the graph and, when controlPort > 0, the control server. On an AUTHORISED open the
@@ -61,6 +64,7 @@ class Engine {
   // Reconciles router, adapters, runtime map and graph. controlMu_ held.
   void applyLocked(const Bridge& bridge);
   void startAdapter(const std::string& sourceId);  // controlMu_ held
+  void pollTally();                                // controlMu_ held
   void stopAdapter(const std::string& sourceId);   // controlMu_ held
 
   int controlPort_;
@@ -74,7 +78,9 @@ class Engine {
   // The model the graph was last reconciled against. Stored before graph_.apply() because the
   // running hook (startAdapter) reads it while apply() runs.
   Bridge model_;                                               // controlMu_
-  std::map<std::string, std::unique_ptr<OmtSource>> adapters_;  // controlMu_
+  std::map<std::string, std::unique_ptr<OmtSource>> adapters_;      // controlMu_
+  std::map<std::string, std::unique_ptr<NdiSource>> ndiAdapters_;   // controlMu_
+  bool adaptersEnabled_ = true;
   // A state callback runs on an adapter thread, and stopAdapter() joins that adapter while
   // holding controlMu_, so this map must never be guarded by controlMu_.
   mutable std::mutex runtimeMu_;                                // guards sourceRuntime_

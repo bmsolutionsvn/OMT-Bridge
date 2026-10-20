@@ -5,15 +5,27 @@
 #include <vector>
 
 #include "core/bridge_store.h"
+#include "engine/ndi_sink.h"
 
 namespace ob {
 
-Engine::Engine(int controlPort, std::string token, std::string bridgeFile)
+Engine::Engine(int controlPort, std::string token, std::string bridgeFile, bool adapters)
     : controlPort_(controlPort),
       token_(std::move(token)),
       bridgeFile_(std::move(bridgeFile)),
+      adaptersEnabled_(adapters),
       graph_(
-          [](const Output& o, const std::string& advertised) -> std::unique_ptr<Sink> {
+          [this](const Output& o, const std::string& advertised) -> std::unique_ptr<Sink> {
+            if (!adaptersEnabled_) return nullptr;  // unit tests: no device, deterministic graph
+            if (o.target == OutputTarget::Ndi) {
+#ifdef OB_WITH_NDI
+              auto sink = std::make_unique<NdiSink>();
+              sink->configure(o, advertised);
+              return sink;
+#else
+              return nullptr;  // NDI support was not built
+#endif
+            }
             auto sink = std::make_unique<OmtSink>();
             sink->configure(o, advertised);
             return sink;
@@ -90,33 +102,50 @@ void Engine::onHubCreated(SourceHub& hub, const Source& source) {
 }
 
 void Engine::startAdapter(const std::string& id) {
-  if (adapters_.count(id) != 0) return;
+  if (adapters_.count(id) != 0 || ndiAdapters_.count(id) != 0) return;
   const Source* s = model_.findSource(id);
   if (s == nullptr) return;  // removed while stopping
-  adapterStarts_.fetch_add(1);  // every start decision, including the NDI branch
-  if (s->kind == SourceKind::Ndi) {
-    // NDI has no adapter in M2: report it offline rather than silently Ready forever.
+  adapterStarts_.fetch_add(1);  // every start decision
+  if (!adaptersEnabled_) {
     std::lock_guard l(runtimeMu_);
     sourceRuntime_[id].state = SignalState::Offline;
+    return;
+  }
+  if (s->kind == SourceKind::Ndi) {
+#ifdef OB_WITH_NDI
+    auto src = std::make_unique<NdiSource>(
+        s->address,
+        [this, id](std::shared_ptr<Frame> f) { graph_.publish(id, std::move(f)); },
+        [this, id](std::shared_ptr<AudioFrame> a) { graph_.publishAudio(id, std::move(a)); },
+        [this, id](SignalState st, std::optional<ErrorInfo>) {
+          // Adapter thread: own mutex only, never controlMu_ (stopAdapter joins this thread
+          // while holding it).
+          std::lock_guard l(runtimeMu_);
+          sourceRuntime_[id].state = st;
+        });
+    ndiAdapters_[id] = std::move(src);
+    ndiAdapters_[id]->start();
+#else
+    std::lock_guard l(runtimeMu_);
+    sourceRuntime_[id].state = SignalState::Offline;  // NDI support was not built
+#endif
     return;
   }
   auto src = std::make_unique<OmtSource>(
       s->address,
       [this, id](std::shared_ptr<Frame> f) { graph_.publish(id, std::move(f)); },
       [this, id](SignalState st, std::optional<ErrorInfo>) {
-        // Adapter thread: own mutex only, never controlMu_ (stopAdapter below joins this thread
-        // while holding it).
         std::lock_guard l(runtimeMu_);
         sourceRuntime_[id].state = st;
       },
-      // Audio is wired in Task 10: until then OMT audio is received and dropped, visibly here.
-      OmtSource::AudioSink{});
+      [this, id](std::shared_ptr<AudioFrame> a) { graph_.publishAudio(id, std::move(a)); });
   adapters_[id] = std::move(src);
   adapters_[id]->start();
 }
 
 void Engine::stopAdapter(const std::string& id) {
-  adapters_.erase(id);  // joins the loops; their state callbacks have finished
+  adapters_.erase(id);      // joins the loops; their state callbacks have finished
+  ndiAdapters_.erase(id);
   // Retire this run's liveness only after the join, so no late callback can overwrite it.
   std::lock_guard l(runtimeMu_);
   const auto it = sourceRuntime_.find(id);
@@ -126,7 +155,8 @@ void Engine::stopAdapter(const std::string& id) {
   }
 }
 
-std::optional<SourceRuntime> Engine::sourceRuntime(const std::string& id) const {
+std::optional<SourceRuntime> Engine::sourceRuntime(const std::string& id) {
+  pollTally();  // the stats poll also refreshes upstream tally (design 12.3)
   SourceRuntime rt;
   {
     std::lock_guard l(runtimeMu_);
@@ -145,6 +175,16 @@ std::optional<SourceRuntime> Engine::sourceRuntime(const std::string& id) const 
     }
   }
   return rt;
+}
+
+void Engine::pollTally() {
+  const auto tallies = graph_.pollTallies();
+  for (const auto& [sourceId, t] : tallies) {
+    if (const auto omt = adapters_.find(sourceId); omt != adapters_.end())
+      omt->second->setTally(t.program, t.preview);
+    if (const auto ndi = ndiAdapters_.find(sourceId); ndi != ndiAdapters_.end())
+      ndi->second->setTally(t.program, t.preview);
+  }
 }
 
 std::optional<OutputRuntime> Engine::outputRuntime(const std::string& id) const {
@@ -185,7 +225,8 @@ void Engine::stop() {
   }
   std::lock_guard l(controlMu_);
   graph_.stop();
-  adapters_.clear();
+  adapters_.clear();  // entries the stop callbacks did not already erase
+  ndiAdapters_.clear();
 }
 
 void Engine::onControlClientDisconnected(const ClientId&) {

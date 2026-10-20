@@ -19,7 +19,7 @@ static ob::Bridge twoOutputsOneSource() {
 }
 
 TEST_CASE("applying a bridge starts rows and refs the hub") {
-  ob::Engine engine(0, "token");  // port 0: do not bind, tests drive apply() directly
+  ob::Engine engine(0, "token", {}, false);  // no devices in a unit test  // port 0: do not bind, tests drive apply() directly
   engine.apply(twoOutputsOneSource());
   REQUIRE(engine.graph().hub("s1") != nullptr);
   // Demand is gated on start(): configuring must not open an adapter.
@@ -32,7 +32,7 @@ TEST_CASE("applying a bridge starts rows and refs the hub") {
 }
 
 TEST_CASE("outputs survive a control-channel disconnect (the UI-close guarantee)") {
-  ob::Engine engine(0, "token");
+  ob::Engine engine(0, "token", {}, false);  // no devices in a unit test
   engine.apply(twoOutputsOneSource());
   engine.start();
 
@@ -49,7 +49,7 @@ TEST_CASE("outputs survive a control-channel disconnect (the UI-close guarantee)
 }
 
 TEST_CASE("runtime state is Ready when configured, and after the last output leaves") {
-  ob::Engine engine(0, "token");
+  ob::Engine engine(0, "token", {}, false);  // no devices in a unit test
   auto b = twoOutputsOneSource();  // NDI: deterministic, no socket
   engine.apply(b);
   auto rt = engine.sourceRuntime("s1");
@@ -76,7 +76,7 @@ TEST_CASE("runtime state is Ready when configured, and after the last output lea
 }
 
 TEST_CASE("editing a configured source restarts its adapter decision") {
-  ob::Engine engine(0, "token");
+  ob::Engine engine(0, "token", {}, false);  // no devices in a unit test
   auto b = twoOutputsOneSource();  // NDI source, NDI outputs: no sockets
   engine.apply(b);
   engine.start();
@@ -88,3 +88,20 @@ TEST_CASE("editing a configured source restarts its adapter decision") {
   CHECK(engine.graph().hub("s1")->refs() == 2);
   engine.stop();
 }
+
+#ifdef OB_WITH_NDI
+TEST_CASE("an NDI source starts a real adapter and reports Connecting") {
+  ob::Engine engine(0, "token");  // adapters enabled: a real NdiSource
+  ob::Bridge b;
+  b.name = "NDI Test";
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "no-such-source"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "A"});
+  engine.apply(b);
+  engine.start();
+
+  auto rt = engine.sourceRuntime("s1");
+  REQUIRE(rt.has_value());
+  CHECK(static_cast<int>(rt->state) == static_cast<int>(ob::SignalState::Connecting));
+  engine.stop();
+}
+#endif
