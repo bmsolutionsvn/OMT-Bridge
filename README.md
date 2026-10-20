@@ -10,19 +10,28 @@ v1 is a local converter/proxy; the WAN tunnel (Host/Join) is v2.
 
 ## Status
 
-M0 and M1 are done: the build foundation (CMake, vcpkg, CI, the submodule), a UI-free core
-(frame type, signal states, a drop-oldest queue, the Bridge model and its JSON store), and the
-engine skeleton. The engine has a refcounted source hub, isolated per-output rows, a reconciling
-graph, and a token-authenticated loopback control server with five commands; it runs headless
-and keeps running when the UI closes.
+M0–M4 are done. The engine bridges OMT, OMT-HX and NDI in both directions with audio, alpha and
+tally. The Qt shell drives it: Sources and Outputs panes, a matrix view, live state and fps/Mbps,
+settings, confirm dialogs and the Bridge file.
 
-Run it with `omt-bridge-engine.exe --port <n> [--token <s>] [--bridge <file>]`. It prints
-`READY <token>` and pushes a `state` reply when an authorised client connects; pass the token as
-`?token=` on the WebSocket URL.
+Run the shell from `build\release`:
 
-The Qt UI is a status-bar stub. Nothing bridges frames yet: no OMT, OMT-HX or NDI adapter exists.
-NDI is optional at build time (`OB_WITH_NDI`, auto-detected; off in CI). The supervisor and
-process-launcher code is present but not wired in until M2.
+```powershell
+.\omt-bridge.exe
+```
+
+It launches `omt-bridge-engine.exe` when needed, or adopts an engine left running by the previous
+session through `%LOCALAPPDATA%\OMTBridge\engine.json`, and saves the bridge to
+`%LOCALAPPDATA%\OMTBridge\bridge.json`. The engine stays headless:
+`omt-bridge-engine.exe --port <n> [--token <s>] [--bridge <file>] [--discovery <file>]`. It
+prints `READY <token>` and answers the WebSocket control channel with `?token=`.
+
+The control commands are `state`, `discover`, `set-running`, `add-source`, `set-source`,
+`remove-source`, `add-output`, `set-output`, `set-output-source`, `remove-output` and
+`set-settings`.
+
+M5 is next: thumbnails, tally on screen, persistent error blocks and a soak run. NDI remains
+optional at build time (`OB_WITH_NDI`, auto-detected; off in CI).
 
 ## Build
 

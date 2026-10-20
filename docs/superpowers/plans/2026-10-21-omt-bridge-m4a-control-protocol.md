@@ -1,5 +1,9 @@
 # OMT-Bridge M4a — Control Protocol, Stats and Discovery
 
+> **Executed 2026-10-21.** The UI also needed `set-running`, output `codec`/`quality`/`alpha` and
+> source `codec` in `state`, `add-output` defaults from settings, and the engine's `--discovery`
+> file (so a reopened shell adopts the running engine). All are covered by the tests below.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Complete the control protocol the UI needs: edit and remove outputs and sources, settings, live fps/bitrate/connections, and a discovery list for adding sources.

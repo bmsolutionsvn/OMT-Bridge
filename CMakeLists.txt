@@ -127,10 +127,16 @@ ob_copy_runtime(omt-bridge-engine)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 set(CMAKE_AUTOMOC ON)
-add_executable(omt-bridge WIN32 src/ui/main.cpp src/ui/main_window.cpp src/ui/main_window.h)
+add_executable(omt-bridge WIN32
+  src/ui/main.cpp src/ui/main_window.cpp src/ui/main_window.h
+  src/ui/control_client.cpp src/ui/control_client.h
+  src/ui/signal_pill.cpp src/ui/signal_pill.h
+  src/ui/tokens.cpp src/ui/tokens.h)
 # The UI includes "ui/main_window.h" (project-root relative), so src must be on the include path.
 target_include_directories(omt-bridge PRIVATE src)
-target_link_libraries(omt-bridge PRIVATE Qt6::Widgets)
+# The shell owns the engine process and reads/writes the Bridge file, so it links the engine
+# (for the control token and the WebSocket client) and the shell helpers.
+target_link_libraries(omt-bridge PRIVATE Qt6::Widgets ob_engine ob_shell)
 
 # Deploy Qt's platform plugin beside the executable. Without it Qt6Core falls back to the plugin
 # path baked into this vcpkg build, so the UI starts only on the build machine; copied anywhere

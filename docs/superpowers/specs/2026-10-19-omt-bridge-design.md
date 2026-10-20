@@ -272,7 +272,9 @@ One worker per Output.
 One JSON file, owned by the UI. On start the engine loads the last Bridge file and
 re-establishes every output. The engine never edits the file; a change that fails in the
 engine (a source it could not reach) is reported to the UI as state, and the UI decides
-whether to save it.
+whether to save it. v1 stores it at `%LOCALAPPDATA%\OMTBridge\bridge.json`, with `engine.json`
+(pid, port, token) beside it so a reopened UI adopts the engine the previous session left
+running.
 
 ## 7. Conversion matrix
 
