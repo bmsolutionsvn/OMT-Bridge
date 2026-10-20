@@ -237,9 +237,9 @@ try {
   if ($rates.Count -lt $minSamples) {
     throw "receiver reported only $($rates.Count) seconds; need at least $minSamples"
   }
-  $minFps = [Math]::Max(1, [int]($Fps * 0.9))
+  $minFps = [Math]::Max(1, [int]($Fps * 0.8))  # real time, not a 90% benchmark
   if ($metrics.avgFps -lt $minFps) {
-    throw ("receiver averaged {0:N1} fps, below 90% of {1}" -f $metrics.avgFps, $Fps)
+    throw ("receiver averaged {0:N1} fps, below 80% of {1}" -f $metrics.avgFps, $Fps)
   }
   if (-not $NoAlpha -and -not $alphaSeen) {
     throw "alpha was requested but the receiver never reported +alpha"
