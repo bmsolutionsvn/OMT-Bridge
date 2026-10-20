@@ -21,6 +21,11 @@ TEST_CASE("audio validity keeps any rate and channel count") {
   CHECK_FALSE(f.valid());
 
   f.format = ob::AudioFormat{48000, 2};
+  f.samples = 0;
+  f.planar.clear();
+  CHECK_FALSE(f.valid());
+
+  f.format = ob::AudioFormat{48000, 2};
   f.samples = 5;              // planar still holds 8 floats
   CHECK_FALSE(f.valid());
 

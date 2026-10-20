@@ -1,6 +1,7 @@
 #pragma once
 // One audio packet, planar float (design 10). Channel-major: all of channel 0's samples, then
 // channel 1's, ... The bridge never resamples or mixes.
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
