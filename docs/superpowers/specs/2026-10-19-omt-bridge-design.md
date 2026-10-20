@@ -624,6 +624,16 @@ library rather than with itself:
   higher than they began. That figure includes the sender's and receiver's own
   encode/decode, so it is a chain figure rather than the bridge's own latency. 1440p, 4K,
   longer soaks and the 2/4-output points remain unmeasured.
+
+  **Verified, M3 (2026-10-21).** The NDI path is proven in-process by the `ob_tests` loopback
+  (`scripts/m3-ndi-smoke.ps1`): an `NdiSink` advertises and an `NdiSource` finds it. A 64x36
+  `UYVA` frame with three alpha bands (255/0/128) arrives with every band intact, which pins
+  the alpha plane at `line_stride * height` with a width-byte row pitch. 44.1 kHz stereo planar
+  audio arrives at the source's rate and channel count — the non-48 kHz case BreadCamera drops.
+  A premultiplied frame (Y 126, U 190, V 70 at alpha 128) arrives straight (Y about 235, U
+  clamped to 240, V clamped to 16), proving `toStraight()` at the NDI edge. **Not yet done:**
+  the Studio Monitor soft-edge alpha smoke test and a real-receiver tally test (15.3); NDI
+  cost and frame-rate figures are also not measured.
 - **No NDI|HX output** (NDI Advanced SDK).
 - **NDI|HX input alpha is present only when the HX sender stacks it** (NDI Bridge,
   TriCaster, Vectar Plus, Vizrt Connect); most HX cameras send none. When present, the NDI
