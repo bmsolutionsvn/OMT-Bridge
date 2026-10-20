@@ -53,6 +53,7 @@ add_library(ob_core STATIC
   src/core/bridge_store.cpp
   src/core/alpha_gate.cpp
   src/core/alpha_convert.cpp
+  src/core/thumbnail.cpp
 )
 target_include_directories(ob_core PUBLIC src)
 # PUBLIC: signal_state.h includes <nlohmann/json.hpp>, and every later core header that
@@ -105,6 +106,7 @@ add_executable(ob_tests
   tests/bridge_graph_test.cpp
   tests/alpha_gate_test.cpp
   tests/alpha_convert_test.cpp
+  tests/thumbnail_test.cpp
   tests/command_router_test.cpp
   tests/supervisor_test.cpp
   tests/engine_test.cpp
