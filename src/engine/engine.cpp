@@ -154,6 +154,7 @@ std::optional<OutputRuntime> Engine::outputRuntime(const std::string& id) const 
   rt.note = stats->note;
   rt.delivered = stats->delivered;
   rt.dropped = stats->dropped;
+  rt.audioDelivered = stats->audioDelivered;
   return rt;
 }
 

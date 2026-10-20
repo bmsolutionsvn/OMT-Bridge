@@ -25,6 +25,7 @@ struct OutputRuntime {
   std::string note;
   uint64_t delivered = 0;
   uint64_t dropped = 0;
+  uint64_t audioDelivered = 0;
 };
 
 // Return nullopt for an id with no runtime row; the reply then carries no runtime keys at all.

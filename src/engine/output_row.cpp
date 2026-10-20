@@ -14,7 +14,7 @@ OutputRow::OutputRow(std::string id, std::unique_ptr<Sink> sink, size_t capacity
 OutputRow::~OutputRow() { stop(); }
 
 void OutputRow::start() {
-  if (thread_.joinable()) return;
+  if (thread_.joinable() || audioThread_.joinable()) return;
   // A deliberate restart retries: clear a previous fault, or a row that now works would still be
   // reported Offline by the engine. `delivered_` is NOT reset — it is a cumulative stat.
   faulted_.store(false);

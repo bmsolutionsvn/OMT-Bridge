@@ -62,7 +62,8 @@ class SourceHub {
   // The newest audio packet, in its own slot: audio never gates video and the two are stored
   // independently (design 10). Single writer — BridgeGraph::publishAudio, serialised by the graph
   // mutex — like storeFrame(); a direct second writer would race the slot.
-  // Ownership: the caller transfers the frame and must not reuse or mutate it afterwards.
+  // Ownership: the caller keeps its reference but must not mutate the packet afterwards; the hub
+  // and every row share it.
   void storeAudio(std::shared_ptr<AudioFrame> frame);
   std::shared_ptr<const AudioFrame> latestAudio() const;
 

@@ -32,6 +32,9 @@ namespace ob {
 // Construction and configure() run under the graph mutex: keep them cheap and do not block.
 // A factory or configure() may reopen a real adapter and may therefore block (an OMT sender
 // teardown/setup); while it does, commands wait. It must still never call back into the graph.
+//
+// deliver() and deliverAudio() run on the row's two workers and stop() joins them: they must
+// return, and must not block forever.
 class Sink {
  public:
   virtual ~Sink() = default;

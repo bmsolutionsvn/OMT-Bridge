@@ -257,12 +257,39 @@ TEST_CASE("a row delivers audio on its own path, in order") {
     std::this_thread::sleep_for(1ms);
   row.stop();
   CHECK(row.audioDelivered() == 3u);
+
+  // A stop/start cycle must reopen the audio queue too, exactly like the video queue.
+  row.start();
+  auto extra = std::make_shared<ob::AudioFrame>();
+  extra->format = {48000, 2};
+  extra->samples = 1;
+  extra->planar.assign(2, 0.0f);
+  extra->timestamp = 3;
+  row.offerAudio(extra);
+  const auto afterRestart = std::chrono::steady_clock::now() + 2s;
+  while (row.audioDelivered() < 4 && std::chrono::steady_clock::now() < afterRestart)
+    std::this_thread::sleep_for(1ms);
+  row.stop();
+  CHECK(row.audioDelivered() == 4u);
   std::lock_guard l(raw->m);
-  CHECK(raw->order == std::vector<int64_t>{0, 1, 2});
+  CHECK(raw->order == std::vector<int64_t>{0, 1, 2, 3});
 }
 
 TEST_CASE("a blocked audio consumer does not delay video") {
-  auto sink = std::make_unique<AudioSink>();
+  class GatedAudio : public ob::Sink {
+   public:
+    void deliver(const std::shared_ptr<const ob::Frame>&) override { ++video; }
+    void deliverAudio(const std::shared_ptr<const ob::AudioFrame>&) override {
+      entered.store(true);
+      while (!gate.load()) std::this_thread::sleep_for(1ms);
+      ++audio;
+    }
+    std::atomic<bool> entered{false};
+    std::atomic<bool> gate{false};
+    std::atomic<int> video{0};
+    std::atomic<int> audio{0};
+  };
+  auto sink = std::make_unique<GatedAudio>();
   auto* raw = sink.get();
   ob::OutputRow row("o1", std::move(sink));
   row.start();
@@ -271,14 +298,26 @@ TEST_CASE("a blocked audio consumer does not delay video") {
   a->format = {48000, 2};
   a->samples = 1;
   a->planar.assign(2, 0.0f);
-  row.offerAudio(a);  // its worker may block in the sink
-  row.offer(frame(7));
+  row.offerAudio(a);
 
+  const auto enteredBy = std::chrono::steady_clock::now() + 2s;
+  while (!raw->entered.load() && std::chrono::steady_clock::now() < enteredBy)
+    std::this_thread::sleep_for(1ms);
+  REQUIRE(raw->entered.load());  // the audio worker is now inside the sink, blocked
+
+  row.offer(frame(7));
   const auto deadline = std::chrono::steady_clock::now() + 2s;
   while (raw->video.load() < 1 && std::chrono::steady_clock::now() < deadline)
     std::this_thread::sleep_for(1ms);
   CHECK(raw->video.load() == 1);
+  CHECK(row.audioDelivered() == 0u);  // still blocked while video got through
+
+  raw->gate.store(true);
+  const auto released = std::chrono::steady_clock::now() + 2s;
+  while (row.audioDelivered() < 1 && std::chrono::steady_clock::now() < released)
+    std::this_thread::sleep_for(1ms);
   row.stop();
+  CHECK(row.audioDelivered() == 1u);
 }
 
 TEST_CASE("a throwing audio sink does not fault the row") {
