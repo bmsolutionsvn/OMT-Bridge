@@ -599,8 +599,8 @@ library rather than with itself:
   **Measured, M2 (2026-10-20).** `scripts/m2-e2e.ps1` on the test PC (AMD Ryzen 7 5700X,
   8C/16T; Radeon RX 6600 via AMF; Windows 11 Pro; OMT-HX `ae96aa1`) sent 1920x1080p60
   alpha through `omthx-send` -> engine -> `omthx-recv`, one OMT-HX output, for 12 s.
-  Across four runs the engine used **16.3-18.1 s of CPU over 12.1 s wall (1.35-1.49
-  cores), or 22.5-24.9 ms of CPU per output frame at 60 fps**. That is the whole bridge
+  Across five runs the engine used **16.3-21.1 s of CPU over 12.1 s wall (1.35-1.74
+  cores), or 22.5-29.1 ms of CPU per output frame at 60 fps**. That is the whole bridge
   cost for one output -- source decode, the UYVY copy and encode -- not an encode-only
   figure. A per-output CPU split needs a profiler and is not measured; the 2- and
   4-output points and a non-alpha baseline are also unmeasured, with alpha being the
