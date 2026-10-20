@@ -289,7 +289,8 @@ void NdiSource::run() {
       }
 
       if (live && std::chrono::steady_clock::now() - last > kOfflineAfter) {
-        live = false;  // was live, no video
+        live = false;         // was live, no video
+        errorReported = true;  // the same outage must not report again as an error
         if (onState_) onState_(SignalState::Offline, std::nullopt);
       }
     }

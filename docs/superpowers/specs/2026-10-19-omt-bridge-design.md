@@ -638,8 +638,9 @@ library rather than with itself:
   fixed.
 - **NDI `fastest` delivers fields.** `NDIlib_recv_color_format_fastest` documents that
   `allow_video_fields` is true and individual fields are always delivered, so an
-  interlaced NDI source arrives as field-0/field-1 frames. v1 passes each frame through as
-  it comes; deinterlacing is not in scope.
+  interlaced NDI source can arrive as field-0/field-1 frames. v1 accepts progressive and
+  interleaved frames and rejects field-only frames with `ndi-format`; deinterlacing is
+  not in scope.
 - **No tally into NDI**, no PTZ, no KVM, no live preview, no custom metadata.
 
 ## 17. Risks
