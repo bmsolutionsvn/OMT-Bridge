@@ -438,6 +438,11 @@ soft edges. Compositing straight colour onto black belongs with the alpha-conver
 - The engine sends previews only while at least one control client is connected, at the
   `thumbnailIntervalMs` setting. That demand also keeps a source adapter running when no
   output references it (6.4).
+- There is no separate low-bandwidth preview to subscribe to. `omthx::Receiver` has no preview
+  pixel format; OMT's `OMTReceiveFlags_Preview` is used only inside `probe()` (which returns a
+  format, not pixels), and an HX source is a single HEVC stream. An HX thumbnail therefore reuses
+  the full receiver's decoded frame; the interval limits the downscale and the send, not the wire
+  rate. A source with no outputs still runs its full receiver for the preview.
 
 ## 12. States, tally and errors
 

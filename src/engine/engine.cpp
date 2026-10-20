@@ -381,6 +381,10 @@ void Engine::onControlClientConnected() {
 
 void Engine::maybeSendThumbnails() {
   if (!server_ || uiClients_ <= 0) return;
+  // The hub's decoded frame is the only picture available: omthx::Receiver has no preview pixel
+  // format, OMT's preview flag is internal to probe(), and an HX source is one HEVC stream. The
+  // interval limits the downscale and the send, not the wire rate; an output needs the same
+  // receiver anyway.
   const int intervalMs = router_.bridge().settings.thumbnailIntervalMs;
   if (intervalMs <= 0) return;
   const auto now = std::chrono::steady_clock::now();
