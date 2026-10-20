@@ -2,6 +2,7 @@
 // One source (design 6.4). Publishes the newest decoded frame into a single slot; the
 // adapter is meant to run only while the hub is running, which is exactly when at least one
 // output references the source or its thumbnail is wanted (demand-driven).
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -17,8 +18,11 @@ namespace ob {
 class SourceHub {
  public:
   using RunningChanged = std::function<void(bool running)>;
+  // Injected so the 2 s opaque-alpha window can be tested without sleeping.
+  using Clock = std::function<std::chrono::steady_clock::time_point()>;
 
-  explicit SourceHub(std::string id) : id_(std::move(id)) {}
+  explicit SourceHub(std::string id, Clock clock = [] { return std::chrono::steady_clock::now(); })
+      : id_(std::move(id)), clock_(std::move(clock)) {}
 
   const std::string& id() const { return id_; }
 
@@ -59,6 +63,7 @@ class SourceHub {
   void maybeTransition();       // fires the callback once per transition, outside the lock
 
   std::string id_;
+  Clock clock_;
   mutable std::mutex mu_;
   int refs_ = 0;
   bool thumbnailWanted_ = false;

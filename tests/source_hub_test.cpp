@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -96,4 +97,33 @@ TEST_CASE("hammering addRef and release from several threads keeps starts and st
   CHECK(hub.refs() == 0);
   CHECK_FALSE(hub.running());
   CHECK(starts.load() == stops.load());
+}
+
+// The gate itself is unit-tested; this pins that the hub actually applies it and that the
+// published frame stays valid after the alpha plane is dropped.
+TEST_CASE("the hub drops an opaque alpha plane after two seconds and keeps the frame valid") {
+  auto now = std::chrono::steady_clock::now();
+  ob::SourceHub hub("s1", [&] { return now; });
+
+  const auto opaque = [] {
+    auto f = std::make_shared<ob::Frame>();
+    f->format = ob::VideoFormat{4, 2, 60, 1, true};
+    f->uyvy.assign(f->lumaBytes() + f->alphaBytes(), 0xFF);
+    f->premultiplied = true;
+    return f;
+  };
+
+  hub.storeFrame(opaque());  // starts the window
+  now += std::chrono::milliseconds(1500);
+  hub.storeFrame(opaque());
+  REQUIRE(hub.latest().get() != nullptr);
+  CHECK(hub.latest()->format.alpha);  // under 2 s
+
+  now += std::chrono::milliseconds(600);
+  hub.storeFrame(opaque());  // 2.1 s of continuous opacity
+  REQUIRE(hub.latest().get() != nullptr);
+  CHECK_FALSE(hub.latest()->format.alpha);
+  CHECK_FALSE(hub.latest()->premultiplied);
+  CHECK(hub.latest()->valid());
+  CHECK(hub.latest()->uyvy.size() == hub.latest()->lumaBytes());
 }

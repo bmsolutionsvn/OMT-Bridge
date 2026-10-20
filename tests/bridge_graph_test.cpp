@@ -330,3 +330,35 @@ TEST_CASE("changing an output's configuration revives a faulted row") {
   CHECK_FALSE(graph.rowStats("o1")->faulted);
   graph.stop();
 }
+
+namespace {
+std::unique_ptr<ob::Sink> throwingSink(const ob::Output& o, const std::string&) {
+  if (o.id == "o2") throw std::runtime_error("factory failed");
+  return nullptr;
+}
+}
+
+// A throw inside apply() must still stop a source that this same apply removed, or its adapter
+// outlives its hub.
+TEST_CASE("a throwing apply still stops a pruned source's adapter") {
+  ob::Bridge b1;
+  b1.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "PC"});
+  b1.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "A"});
+
+  std::vector<bool> transitions;
+  ob::BridgeGraph graph(throwingSink, [&](ob::SourceHub& h, const ob::Source&) {
+    h.setOnRunningChanged([&](bool on) { transitions.push_back(on); });
+  });
+  graph.apply(b1);
+  graph.start();
+  REQUIRE(transitions.size() == 1u);
+  CHECK(transitions[0] == true);
+
+  ob::Bridge b2;  // s1 removed, and o2's factory throws while apply holds the graph
+  b2.outputs.push_back(ob::Output{.id = "o2", .sourceId = "", .target = ob::OutputTarget::Ndi, .name = "B"});
+  CHECK_THROWS(graph.apply(b2));
+
+  REQUIRE(transitions.size() == 2u);
+  CHECK(transitions[1] == false);
+  CHECK(graph.hub("s1") == nullptr);
+}
