@@ -18,9 +18,27 @@ $bin = Join-Path $root "build\$Configuration"
 $engineExe = Join-Path $bin 'omt-bridge-engine.exe'
 $recvExe = Join-Path $bin 'omthx-build\omthx-recv.exe'
 
-foreach ($path in @($engineExe, $recvExe)) {
-  if (-not (Test-Path -LiteralPath $path)) {
-    throw "missing $path; run scripts\build.ps1 first (it builds omt-bridge-engine; omthx tools need OMTHX_BUILD_TESTS=ON)"
+$missing = @($engineExe, $recvExe) | Where-Object { -not (Test-Path -LiteralPath $_) }
+if ($missing) {
+  Write-Host "building missing binaries: $($missing -join ', ')"
+  $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+  $vswhere = Join-Path $installer 'vswhere.exe'
+  if (-not (Test-Path -LiteralPath $vswhere)) { throw "missing binaries and no vswhere.exe at $vswhere" }
+  $vs = & $vswhere -latest -products * -property installationPath
+  if (-not $vs) { throw 'Visual Studio installation not found' }
+  & (Join-Path $vs 'Common7\Tools\Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
+  if (-not $env:VCPKG_ROOT) { $env:VCPKG_ROOT = Join-Path $vs 'VC\vcpkg' }
+  Push-Location $root
+  try {
+    & cmake --preset $Configuration -DOMTHX_BUILD_TESTS=ON
+    if ($LASTEXITCODE) { throw "cmake configure failed ($LASTEXITCODE)" }
+    & cmake --build --preset $Configuration --target omthx-recv omt-bridge-engine
+    if ($LASTEXITCODE) { throw "cmake build failed ($LASTEXITCODE)" }
+  } finally {
+    Pop-Location
+  }
+  foreach ($path in $missing) {
+    if (-not (Test-Path -LiteralPath $path)) { throw "build did not produce $path" }
   }
 }
 
