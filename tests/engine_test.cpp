@@ -101,6 +101,23 @@ TEST_CASE("the first rate sample reports no rate") {
   engine.stop();
 }
 
+TEST_CASE("the running switch stops and restarts the graph without losing rows") {
+  ob::Engine engine(0, "token", {}, false);  // no devices in a unit test
+  engine.apply(twoOutputsOneSource());
+  engine.start();
+  REQUIRE(engine.graph().hub("s1") != nullptr);
+  CHECK(engine.graph().hub("s1")->refs() == 2);
+
+  engine.setRunning(false);
+  CHECK_FALSE(engine.graph().hub("s1")->running());
+  CHECK(engine.graph().rowCount() == 2u);  // the model and the rows are kept
+
+  engine.setRunning(true);
+  CHECK(engine.graph().hub("s1")->running());
+  CHECK(engine.graph().hub("s1")->refs() == 2);
+  engine.stop();
+}
+
 #ifdef OB_WITH_NDI
 TEST_CASE("an NDI source starts a real adapter and reports Connecting") {
   ob::Engine engine(0, "token");  // adapters enabled: a real NdiSource

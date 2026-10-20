@@ -174,12 +174,13 @@ TEST_CASE("set-output edits a row and refuses an unknown one") {
 TEST_CASE("a bad enum in set-output is named and changes nothing") {
   ob::CommandRouter router;
   router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-output","name":"A"})");
+  const int targetBefore = static_cast<int>(router.bridge().outputs[0].target);
   const auto reply =
       router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-output","id":"o1","target":"OMTX","name":"B"})");
   CHECK(reply.find("\"ok\":false") != std::string::npos);
   CHECK(reply.find("OMTX") != std::string::npos);
   CHECK(router.bridge().outputs[0].name == "A");  // the valid field was not applied either
-  CHECK(static_cast<int>(router.bridge().outputs[0].target) == static_cast<int>(ob::OutputTarget::Omt));
+  CHECK(static_cast<int>(router.bridge().outputs[0].target) == targetBefore);
 }
 
 TEST_CASE("remove-output removes the row and refuses the second time") {
@@ -260,6 +261,58 @@ TEST_CASE("discover returns the provider's names, and empty lists without one") 
   const auto found = router.handle(ob::ClientId{"c1"}, R"({"cmd":"discover"})");
   CHECK(found.find("PC (Cam)") != std::string::npos);
   CHECK(found.find("MACHINE (Camera)") != std::string::npos);
+}
+
+TEST_CASE("state carries the configuration the UI edits and saves") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"OMT-HX","address":"PC"})");
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-source","id":"s1","codec":"HEVC"})");
+  router.handle(ob::ClientId{"c1"},
+                R"({"cmd":"add-output","sourceId":"s1","name":"A"})");
+  router.handle(ob::ClientId{"c1"},
+                R"({"cmd":"set-output","id":"o1","target":"NDI","codec":"H.264","quality":"Low","alpha":"Off"})");
+
+  const auto reply = router.handle(ob::ClientId{"c1"}, R"({"cmd":"state"})");
+  CHECK(reply.find("\"codec\":\"HEVC\"") != std::string::npos);
+  CHECK(reply.find("\"target\":\"NDI\"") != std::string::npos);
+  CHECK(reply.find("\"codec\":\"H.264\"") != std::string::npos);
+  CHECK(reply.find("\"quality\":\"Low\"") != std::string::npos);
+  CHECK(reply.find("\"alpha\":\"Off\"") != std::string::npos);
+}
+
+TEST_CASE("set-running carries the engine switch, and refuses a non-boolean") {
+  ob::CommandRouter router;
+  bool running = true;
+  router.setRunning([&] { return running; }, [&](bool on) {
+    running = on;
+    return running;
+  });
+
+  CHECK(router.handle(ob::ClientId{"c1"}, R"({"cmd":"state"})").find("\"running\":true") !=
+        std::string::npos);
+  const auto off = router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-running","on":false})");
+  CHECK(off.find("\"ok\":true") != std::string::npos);
+  CHECK(off.find("\"running\":false") != std::string::npos);
+  CHECK_FALSE(running);
+  CHECK(router.handle(ob::ClientId{"c1"}, R"({"cmd":"state"})").find("\"running\":false") !=
+        std::string::npos);
+
+  const auto bad = router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-running","on":1})");
+  CHECK(bad.find("\"ok\":false") != std::string::npos);
+  CHECK(running == false);
+}
+
+TEST_CASE("add-output starts from the saved default target and quality") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"},
+                R"({"cmd":"set-settings","defaultTarget":"NDI","defaultQuality":"High"})");
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-output","name":"A"})");
+  CHECK(static_cast<int>(router.bridge().outputs[0].target) == static_cast<int>(ob::OutputTarget::Ndi));
+  CHECK(static_cast<int>(router.bridge().outputs[0].quality) == static_cast<int>(ob::Quality::High));
+
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-output","name":"B","target":"OMT"})");
+  CHECK(static_cast<int>(router.bridge().outputs[1].target) == static_cast<int>(ob::OutputTarget::Omt));
+  CHECK(router.bridge().outputs.size() == 2u);
 }
 
 TEST_CASE("setBridge seeds the id counter past a loaded model") {

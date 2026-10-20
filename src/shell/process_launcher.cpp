@@ -7,12 +7,13 @@
 #include <nlohmann/json.hpp>
 
 namespace ob {
-std::optional<Discovery> readDiscovery(const std::filesystem::path& file) {
+std::optional<EngineDiscovery> readDiscovery(const std::filesystem::path& file) {
   std::ifstream f(file);
   if (!f) return std::nullopt;
   try {
     auto j = nlohmann::json::parse(f);
-    Discovery d{j.at("pid").get<DWORD>(), j.at("port").get<int>(), j.at("token").get<std::string>()};
+    EngineDiscovery d{j.at("pid").get<DWORD>(), j.at("port").get<int>(),
+                      j.at("token").get<std::string>()};
     if (d.port <= 0 || d.port > 65535 || d.token.size() < 16) return std::nullopt;
     return d;
   } catch (...) {
@@ -35,7 +36,7 @@ std::optional<std::wstring> processImageBaseName(DWORD pid) {
 
 bool isEngineProcess(DWORD pid) {
   auto name = processImageBaseName(pid);
-  return name && *name == L"breadcamera-engine.exe";
+  return name && *name == L"omt-bridge-engine.exe";
 }
 
 bool engineInstanceRunning() {
@@ -45,8 +46,8 @@ bool engineInstanceRunning() {
   return true;
 }
 
-std::optional<Discovery> waitForDiscovery(const std::filesystem::path& file,
-                                          std::chrono::milliseconds timeout) {
+std::optional<EngineDiscovery> waitForDiscovery(const std::filesystem::path& file,
+                                                 std::chrono::milliseconds timeout) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   for (;;) {
     if (auto d = readDiscovery(file)) return d;

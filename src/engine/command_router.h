@@ -45,6 +45,11 @@ struct Discovery {
 // May block for the transport's find timeout (NDI: at most 1 s); the UI shows progress.
 using DiscoveryFn = std::function<Discovery()>;
 
+// The engine's global bridging switch ("Start" / "Stop all outputs"). The router only carries it;
+// the engine stops and starts the graph.
+using RunningFn = std::function<bool()>;
+using SetRunningFn = std::function<bool(bool)>;
+
 class CommandRouter {
  public:
   // Wholly synchronous: no engine threads, so the tests can call it directly.
@@ -59,12 +64,15 @@ class CommandRouter {
   // Runtime liveness is supplied by the engine; the router only formats it.
   void setRuntime(SourceRuntimeFn sources, OutputRuntimeFn outputs);
   void setDiscovery(DiscoveryFn discovery);
+  void setRunning(RunningFn get, SetRunningFn set);
 
  private:
   Bridge bridge_;
   SourceRuntimeFn sourceRuntime_;
   OutputRuntimeFn outputRuntime_;
   DiscoveryFn discovery_;
+  RunningFn running_;
+  SetRunningFn setRunning_;
   // Sources and outputs number independently (s1, s2, … and o1, o2, …): the prefixes exist
   // precisely to tell the two kinds apart, so a shared counter would mint "o2" for a first output.
   uint64_t nextSourceId_ = 1;

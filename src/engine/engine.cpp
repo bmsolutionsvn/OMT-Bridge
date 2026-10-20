@@ -41,6 +41,7 @@ Engine::Engine(int controlPort, std::string token, std::string bridgeFile, bool 
   router_.setRuntime([this](const std::string& id) { return sourceRuntime(id); },
                      [this](const std::string& id) { return outputRuntime(id); });
   router_.setDiscovery([this] { return discover(); });
+  router_.setRunning([this] { return running_; }, [this](bool on) { return setRunningLocked(on); });
 }
 
 Engine::~Engine() { stop(); }
@@ -256,10 +257,32 @@ std::optional<OutputRuntime> Engine::outputRuntime(const std::string& id) {
   return rt;
 }
 
+void Engine::setRunning(bool on) {
+  std::lock_guard l(controlMu_);
+  setRunningLocked(on);
+}
+
+bool Engine::setRunningLocked(bool on) {
+  if (on == running_) return running_;
+  if (on) {
+    graph_.start();
+    running_ = true;
+  } else {
+    graph_.stop();
+    running_ = false;
+  }
+  {
+    std::lock_guard r(rateMu_);
+    rates_.clear();  // no rate over the stopped gap
+  }
+  return running_;
+}
+
 void Engine::start() {
   // The hook installed during apply()/start() mutates adapters_ on whichever thread calls this.
   std::lock_guard l(controlMu_);
   graph_.start();
+  running_ = true;
   if (controlPort_ > 0 && server_ == nullptr) {
     server_ = std::make_unique<ControlServer>(controlPort_, token_);
     ControlServer::Handlers h;
@@ -281,6 +304,7 @@ void Engine::stop() {
   }
   std::lock_guard l(controlMu_);
   graph_.stop();
+  running_ = false;
   adapters_.clear();  // entries the stop callbacks did not already erase
 #ifdef OB_WITH_NDI
   ndiAdapters_.clear();

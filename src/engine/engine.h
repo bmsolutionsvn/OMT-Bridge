@@ -47,6 +47,10 @@ class Engine {
   void start();
   void stop();
 
+  // The UI's "Stop all outputs" / "Start" switch: stops or starts the graph while keeping the
+  // control server and the model, so rows can still be edited and the bridge file saved.
+  void setRunning(bool on);
+
   BridgeGraph& graph() { return graph_; }
 
   // Called when a UI disconnects. Deliberately does not stop the graph (design 6.1, 1.1).
@@ -68,6 +72,7 @@ class Engine {
   void startAdapter(const std::string& sourceId);  // controlMu_ held
   void pollTally();                                // controlMu_ held
   void stopAdapter(const std::string& sourceId);   // controlMu_ held
+  bool setRunningLocked(bool on);                  // controlMu_ held
   // OMT names plus one NDI find; the NDI branch waits at most one second, so this blocks a
   // control command for that long. controlMu_ held.
   Discovery discover();
@@ -88,6 +93,9 @@ class Engine {
   std::map<std::string, std::unique_ptr<NdiSource>> ndiAdapters_;   // controlMu_
 #endif
   bool adaptersEnabled_ = true;
+  // The UI's Start / Stop all outputs switch. It gates the graph, not the control server, so the
+  // UI can still edit and restart rows while outputs are stopped.
+  bool running_ = false;                                        // controlMu_
   // A state callback runs on an adapter thread, and stopAdapter() joins that adapter while
   // holding controlMu_, so this map must never be guarded by controlMu_.
   mutable std::mutex runtimeMu_;                                // guards sourceRuntime_

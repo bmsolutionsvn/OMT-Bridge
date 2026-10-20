@@ -45,6 +45,11 @@ void CommandRouter::setRuntime(SourceRuntimeFn sources, OutputRuntimeFn outputs)
 
 void CommandRouter::setDiscovery(DiscoveryFn discovery) { discovery_ = std::move(discovery); }
 
+void CommandRouter::setRunning(RunningFn get, SetRunningFn set) {
+  running_ = std::move(get);
+  setRunning_ = std::move(set);
+}
+
 std::string CommandRouter::handle(const ClientId&, const std::string& text) {
   // ONE try around the whole body. Every field read below (j.value(...), j["id"], ...) throws
   // nlohmann's type_error.302 on a wrong-typed value — `{"cmd":"add-output","sourceId":42}` — and
@@ -64,6 +69,7 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
         json row = {{"id", s.id},
                     {"kind", std::string(toString(s.kind))},
                     {"address", s.address}};
+        if (s.codec) row["codec"] = std::string(toString(*s.codec));
         // Runtime keys appear only when the engine has a row for this id: a loaded-but-not-running
         // model must not claim a state it never measured.
         if (sourceRuntime_) {
@@ -85,6 +91,9 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
         json row = {{"id", o.id},
                     {"sourceId", o.sourceId},
                     {"target", std::string(toString(o.target))},
+                    {"codec", std::string(toString(o.codec))},
+                    {"quality", std::string(toString(o.quality))},
+                    {"alpha", std::string(toString(o.alpha))},
                     {"name", o.name},
                     {"advertised", bridge_.advertisedName(o)}};
         if (outputRuntime_) {
@@ -102,6 +111,7 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
         outputs.push_back(std::move(row));
       }
       return json{{"ok", true},
+                  {"running", running_ ? running_() : false},
                   {"name", bridge_.name},
                   {"sources", sources},
                   {"outputs", outputs},
@@ -153,6 +163,34 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
       o.id = "o" + std::to_string(nextOutputId_++);
       o.sourceId = j.value("sourceId", std::string{});
       o.name = j.value("name", std::string{"Output " + o.id});
+      // A new output starts from the bridge's saved defaults (design 13.2), and an explicit
+      // field overrides them. Validate every present field before pushing the row.
+      o.target = bridge_.settings.defaultTarget;
+      o.quality = bridge_.settings.defaultQuality;
+      if (j.contains("target")) {
+        if (!j["target"].is_string()) return refuse("add-output: \"target\" must be text");
+        const auto parsed = outputTargetFromString(j["target"].get<std::string>());
+        if (!parsed) return refuse("add-output: unknown \"target\": " + j["target"].get<std::string>());
+        o.target = *parsed;
+      }
+      if (j.contains("codec")) {
+        if (!j["codec"].is_string()) return refuse("add-output: \"codec\" must be text");
+        const auto parsed = hxCodecFromString(j["codec"].get<std::string>());
+        if (!parsed) return refuse("add-output: unknown \"codec\": " + j["codec"].get<std::string>());
+        o.codec = *parsed;
+      }
+      if (j.contains("quality")) {
+        if (!j["quality"].is_string()) return refuse("add-output: \"quality\" must be text");
+        const auto parsed = qualityFromString(j["quality"].get<std::string>());
+        if (!parsed) return refuse("add-output: unknown \"quality\": " + j["quality"].get<std::string>());
+        o.quality = *parsed;
+      }
+      if (j.contains("alpha")) {
+        if (!j["alpha"].is_string()) return refuse("add-output: \"alpha\" must be text");
+        const auto parsed = alphaModeFromString(j["alpha"].get<std::string>());
+        if (!parsed) return refuse("add-output: unknown \"alpha\": " + j["alpha"].get<std::string>());
+        o.alpha = *parsed;
+      }
       bridge_.outputs.push_back(std::move(o));
       return json{{"ok", true}, {"id", bridge_.outputs.back().id}}.dump();
     }
@@ -319,6 +357,13 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
       if (interval) bridge_.settings.thumbnailIntervalMs = *interval;
       if (startWithApp) bridge_.settings.startEngineWithApp = *startWithApp;
       return json{{"ok", true}}.dump();
+    }
+
+    if (cmd == "set-running") {
+      if (!j.contains("on") || !j["on"].is_boolean()) return refuse("set-running needs a boolean \"on\"");
+      if (!setRunning_) return refuse("set-running is not available");
+      const bool on = setRunning_(j["on"].get<bool>());
+      return json{{"ok", true}, {"running", on}}.dump();
     }
 
     if (cmd == "discover") {
