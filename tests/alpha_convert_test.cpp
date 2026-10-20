@@ -92,6 +92,7 @@ TEST_CASE("toStraight uses each pair's mean alpha and keeps the alpha plane") {
 TEST_CASE("toStraight leaves a frame without alpha, or an invalid frame, untouched") {
   auto noAlpha = make(100, 120, 130, 255);
   noAlpha.format.alpha = false;
+  noAlpha.uyvy.resize(noAlpha.lumaBytes());  // valid, but there is no alpha plane
   ob::toStraight(noAlpha);
   CHECK(noAlpha.uyvy[1] == 100);
   CHECK(noAlpha.uyvy[0] == 120);
