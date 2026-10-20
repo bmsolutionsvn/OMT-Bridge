@@ -18,8 +18,11 @@ constexpr int kReceiveTimeoutMs = 100;
 constexpr auto kOfflineAfter = std::chrono::seconds(2);
 }
 
-OmtSource::OmtSource(std::string address, FrameSink onFrame, StateSink onState)
-    : address_(std::move(address)), onFrame_(std::move(onFrame)), onState_(std::move(onState)) {}
+OmtSource::OmtSource(std::string address, FrameSink onFrame, StateSink onState, AudioSink onAudio)
+    : address_(std::move(address)),
+      onFrame_(std::move(onFrame)),
+      onState_(std::move(onState)),
+      onAudio_(std::move(onAudio)) {}
 
 OmtSource::~OmtSource() { stopImpl(false); }  // no state callback from a destructor
 
@@ -131,8 +134,12 @@ void OmtSource::audioLoop(OmtReceiverHolder& rx) {
   try {
     while (!stop_.load()) {
       if (rx.receiver.receiveAudio(af, kReceiveTimeoutMs)) {
-        // Audio passthrough is M3 (design 20 does not list it in M2's done-criteria). Draining
-        // keeps the session's audio path moving instead of queuing behind an unread stream.
+        auto a = std::make_shared<AudioFrame>();
+        a->format = AudioFormat{af.sampleRate, af.channels};
+        a->samples = af.samples;
+        a->timestamp = af.timestamp;
+        a->planar = std::move(af.planar);
+        if (a->valid() && onAudio_) onAudio_(std::move(a));
       }
     }
   } catch (const std::exception&) {

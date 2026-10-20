@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 
+#include "core/audio.h"
 #include "core/bridge_model.h"
 #include "core/frame.h"
 #include "engine/output_row.h"
@@ -22,6 +23,7 @@ class OmtSink : public Sink {
 
   void configure(const Output& output, const std::string& advertisedName) override;
   void deliver(const std::shared_ptr<const Frame>& frame) override;
+  void deliverAudio(const std::shared_ptr<const AudioFrame>& frame) override;
   std::string note() const override;
 
  protected:

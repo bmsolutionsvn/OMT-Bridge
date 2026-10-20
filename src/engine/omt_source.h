@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 
+#include "core/audio.h"
 #include "core/frame.h"
 #include "core/signal_state.h"
 
@@ -20,11 +21,12 @@ struct OmtReceiverHolder;  // hides omthx from this header
 class OmtSource {
  public:
   using FrameSink = std::function<void(std::shared_ptr<Frame>)>;
+  using AudioSink = std::function<void(std::shared_ptr<AudioFrame>)>;
   // Called from the start/stop caller and from the video/audio threads. It must not block, must
   // not re-enter OmtSource, and must synchronise its own storage.
   using StateSink = std::function<void(SignalState, std::optional<ErrorInfo>)>;
 
-  OmtSource(std::string address, FrameSink onFrame, StateSink onState);
+  OmtSource(std::string address, FrameSink onFrame, StateSink onState, AudioSink onAudio = {});
   ~OmtSource();
   OmtSource(const OmtSource&) = delete;
   OmtSource& operator=(const OmtSource&) = delete;
@@ -41,6 +43,7 @@ class OmtSource {
   std::string address_;
   FrameSink onFrame_;
   StateSink onState_;
+  AudioSink onAudio_;
   std::atomic<bool> stop_{false};
   mutable std::mutex mu_;   // fields only; never join while holding it
   std::mutex lifecycle_;    // serialises whole start()/stop() bodies

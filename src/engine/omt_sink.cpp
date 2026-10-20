@@ -1,5 +1,7 @@
 #include "engine/omt_sink.h"
 
+#include <span>
+
 #include <omthx/omthx.h>
 
 namespace ob {
@@ -70,6 +72,16 @@ void OmtSink::deliver(const std::shared_ptr<const Frame>& frame) {
     frameNote_ = "alpha dropped — H.264 above 1080p, use HEVC";
   }
   send(frame->format, frame->uyvy.data(), alpha, frame->premultiplied, frame->timestamp);
+}
+
+void OmtSink::deliverAudio(const std::shared_ptr<const AudioFrame>& frame) {
+  if (!frame || !frame->valid()) return;
+  // Same mutex as the video send: the sender must outlive the call. Audio never gates video at
+  // the row level; here it only waits behind one video send.
+  std::lock_guard l(mu_);
+  if (!sender_ || !sender_->sender) return;
+  sender_->sender->sendAudio(std::span<const float>(frame->planar.data(), frame->planar.size()),
+                             frame->format.sampleRate, frame->format.channels, frame->timestamp);
 }
 
 void OmtSink::send(const VideoFormat& format, const uint8_t* uyvy, bool alpha, bool premultiplied,
