@@ -124,6 +124,7 @@ void NdiSource::run() {
   bool live = false;
   bool formatReported = false;  // one ndi-format report per session, not per frame
   bool errorReported = false;
+  bool connectReported = false;  // one report per failed connect, not per find iteration
   auto last = std::chrono::steady_clock::now();
 
   try {
@@ -142,6 +143,14 @@ void NdiSource::run() {
         settings.allow_video_fields = false;
         settings.p_ndi_recv_name = "OMT Bridge";
         receiver.instance = NDIlib_recv_create_v3(&settings);
+        if (receiver.instance) {
+          connectReported = false;  // a later failure is a new episode
+        } else if (!connectReported) {
+          connectReported = true;
+          if (onState_)
+            onState_(SignalState::Offline,
+                     ErrorInfo{"ndi-failed", "cannot connect to NDI source \"" + name_ + "\""});
+        }
         continue;
       }
 
@@ -167,6 +176,7 @@ void NdiSource::run() {
                             stride >= static_cast<int64_t>(v.xres) * 2;
           std::shared_ptr<Frame> f;
           if (!take) {
+            live = false;  // ndi-format covers this dropout; no second Offline from the timeout
             if (!formatReported) {
               formatReported = true;
               if (onState_)
@@ -174,20 +184,25 @@ void NdiSource::run() {
                          ErrorInfo{"ndi-format", "the NDI source sent unsupported video"});
             }
           } else {
-            f = std::make_shared<Frame>();
-            f->format = VideoFormat{v.xres, v.yres, v.frame_rate_N, v.frame_rate_D, uyva};
-            f->premultiplied = false;  // NDI is straight
-            f->timestamp = ticks(v.timestamp);
-            f->uyvy.resize(f->lumaBytes() + f->alphaBytes());
-            const size_t rowBytes = static_cast<size_t>(v.xres) * 2u;
-            for (int row = 0; row < v.yres; ++row)
-              std::memcpy(f->uyvy.data() + static_cast<size_t>(row) * rowBytes,
-                          v.p_data + static_cast<size_t>(row) * static_cast<size_t>(stride),
-                          rowBytes);
-            if (uyva)
-              std::memcpy(f->uyvy.data() + f->alphaOffset(),
-                          v.p_data + static_cast<size_t>(stride) * static_cast<size_t>(v.yres),
-                          static_cast<size_t>(v.xres) * static_cast<size_t>(v.yres));
+            try {
+              f = std::make_shared<Frame>();
+              f->format = VideoFormat{v.xres, v.yres, v.frame_rate_N, v.frame_rate_D, uyva};
+              f->premultiplied = false;  // NDI is straight
+              f->timestamp = ticks(v.timestamp);
+              f->uyvy.resize(f->lumaBytes() + f->alphaBytes());
+              const size_t rowBytes = static_cast<size_t>(v.xres) * 2u;
+              for (int row = 0; row < v.yres; ++row)
+                std::memcpy(f->uyvy.data() + static_cast<size_t>(row) * rowBytes,
+                            v.p_data + static_cast<size_t>(row) * static_cast<size_t>(stride),
+                            rowBytes);
+              if (uyva)
+                std::memcpy(f->uyvy.data() + f->alphaOffset(),
+                            v.p_data + static_cast<size_t>(stride) * static_cast<size_t>(v.yres),
+                            static_cast<size_t>(v.xres) * static_cast<size_t>(v.yres));
+            } catch (...) {
+              NDIlib_recv_free_video_v2(receiver.instance, &v);
+              throw;
+            }
           }
           NDIlib_recv_free_video_v2(receiver.instance, &v);
           if (!f || !f->valid()) continue;  // never publish a frame the hub rejects
@@ -207,17 +222,23 @@ void NdiSource::run() {
           if (a.FourCC == NDIlib_FourCC_audio_type_FLTP && a.p_data && a.sample_rate > 0 &&
               a.no_channels > 0 && a.no_samples > 0 &&
               a.channel_stride_in_bytes >= channelBytes) {
-            out = std::make_shared<AudioFrame>();
-            out->format = AudioFormat{a.sample_rate, a.no_channels};
-            out->samples = a.no_samples;
-            out->timestamp = ticks(a.timestamp);
-            const size_t perChannel = static_cast<size_t>(a.no_samples);
-            out->planar.resize(perChannel * static_cast<size_t>(a.no_channels));
-            for (int c = 0; c < a.no_channels; ++c)
-              std::memcpy(
-                  out->planar.data() + static_cast<size_t>(c) * perChannel,
-                  a.p_data + static_cast<size_t>(c) * static_cast<size_t>(a.channel_stride_in_bytes),
-                  perChannel * sizeof(float));
+            try {
+              out = std::make_shared<AudioFrame>();
+              out->format = AudioFormat{a.sample_rate, a.no_channels};
+              out->samples = a.no_samples;
+              out->timestamp = ticks(a.timestamp);
+              const size_t perChannel = static_cast<size_t>(a.no_samples);
+              out->planar.resize(perChannel * static_cast<size_t>(a.no_channels));
+              for (int c = 0; c < a.no_channels; ++c)
+                std::memcpy(
+                    out->planar.data() + static_cast<size_t>(c) * perChannel,
+                    a.p_data +
+                        static_cast<size_t>(c) * static_cast<size_t>(a.channel_stride_in_bytes),
+                    perChannel * sizeof(float));
+            } catch (...) {
+              NDIlib_recv_free_audio_v3(receiver.instance, &a);
+              throw;
+            }
           }
           NDIlib_recv_free_audio_v3(receiver.instance, &a);
           if (!out || !out->valid()) break;
