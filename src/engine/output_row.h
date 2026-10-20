@@ -17,6 +17,12 @@
 
 namespace ob {
 
+// A downstream receiver's tally for one output (design 12.3). Never the bridge's own liveness.
+struct Tally {
+  bool program = false;
+  bool preview = false;
+};
+
 // A sink owns one output's delivery. The graph constructs it through SinkFactory and configures
 // it; the row's worker calls deliver().
 //
@@ -42,6 +48,7 @@ class Sink {
   virtual void deliverAudio(const std::shared_ptr<const AudioFrame>&) {}
   virtual void configure(const Output&, const std::string&) {}
   virtual std::string note() const { return {}; }
+  virtual Tally tally() const { return {}; }
 };
 // May return nullptr; a row with no sink is legal.
 using SinkFactory = std::function<std::unique_ptr<Sink>(const Output&, const std::string&)>;
