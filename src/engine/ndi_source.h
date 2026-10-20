@@ -24,7 +24,8 @@ class NdiSource {
   // NdiSource, and must synchronise its own storage.
   using StateSink = std::function<void(SignalState, std::optional<ErrorInfo>)>;
 
-  NdiSource(std::string name, FrameSink onFrame, AudioSink onAudio, StateSink onState);
+  NdiSource(std::string name, FrameSink onFrame, AudioSink onAudio, StateSink onState,
+            bool lowBandwidth = false);
   ~NdiSource();
   NdiSource(const NdiSource&) = delete;
   NdiSource& operator=(const NdiSource&) = delete;
@@ -42,6 +43,9 @@ class NdiSource {
   void run();
 
   std::string name_;
+  // NDI's preview mode: lower bandwidth and resolution, for a source that only feeds a thumbnail
+  // (design 11). The engine reopens the receiver at full bandwidth when an output attaches.
+  bool lowBandwidth_ = false;
   FrameSink onFrame_;
   AudioSink onAudio_;
   StateSink onState_;

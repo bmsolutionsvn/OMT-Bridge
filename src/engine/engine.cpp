@@ -1,5 +1,6 @@
 #include "engine/engine.h"
 
+#include <algorithm>
 #include <exception>
 #include <utility>
 #include <vector>
@@ -72,6 +73,10 @@ void Engine::applyLocked(const Bridge& bridge) {
   }
   for (const auto& id : changed) stopAdapter(id);  // an edited source must restart
 
+  std::map<std::string, bool> hadOutputs;
+  for (const Source& s : model_.sources)
+    if (SourceHub* h = graph_.hub(s.id)) hadOutputs[s.id] = h->refs() > 0;
+
   router_.setBridge(bridge);
   model_ = bridge;
   for (auto it = lastThumbnail_.begin(); it != lastThumbnail_.end();)
@@ -109,6 +114,19 @@ void Engine::applyLocked(const Bridge& bridge) {
     throw;
   }
   restartChanged();
+
+  // An NDI source stays running for its thumbnail with no outputs; NDI's preview mode is low
+  // bandwidth. Reopen it when demand crosses zero either way: full resolution for an output,
+  // the preview stream for a thumbnail alone (design 11).
+  for (const Source& s : model_.sources) {
+    if (std::find(changed.begin(), changed.end(), s.id) != changed.end()) continue;
+    SourceHub* h = graph_.hub(s.id);
+    if (h == nullptr || !h->running()) continue;
+    const auto had = hadOutputs.find(s.id);
+    if (had == hadOutputs.end() || had->second == (h->refs() > 0)) continue;
+    stopAdapter(s.id);
+    startAdapter(s.id);
+  }
 }
 
 void Engine::onHubCreated(SourceHub& hub, const Source& source) {
@@ -139,6 +157,8 @@ void Engine::startAdapter(const std::string& id) {
   }
   if (s->kind == SourceKind::Ndi) {
 #ifdef OB_WITH_NDI
+    SourceHub* hub = graph_.hub(id);
+    const bool previewOnly = hub != nullptr && hub->refs() == 0;
     auto src = std::make_unique<NdiSource>(
         s->address,
         [this, id](std::shared_ptr<Frame> f) { graph_.publish(id, std::move(f)); },
@@ -153,7 +173,8 @@ void Engine::startAdapter(const std::string& id) {
             rt.error = e->message;  // stays until the source is Live again
           else if (st == SignalState::Live)
             rt.error.clear();
-        });
+        },
+        previewOnly);
     ndiAdapters_[id] = std::move(src);
     ndiAdapters_[id]->start();
 #else
@@ -381,10 +402,9 @@ void Engine::onControlClientConnected() {
 
 void Engine::maybeSendThumbnails() {
   if (!server_ || uiClients_ <= 0) return;
-  // The hub's decoded frame is the only picture available: omthx::Receiver has no preview pixel
-  // format, OMT's preview flag is internal to probe(), and an HX source is one HEVC stream. The
-  // interval limits the downscale and the send, not the wire rate; an output needs the same
-  // receiver anyway.
+  // The hub's decoded frame is the picture. omthx exposes no preview pixel format: OMT's preview
+  // flag is internal to probe() and an HX source is one HEVC stream. NDI sources with no outputs
+  // already arrive from NdiSource's low-bandwidth receiver. The interval limits downscale + send.
   const int intervalMs = router_.bridge().settings.thumbnailIntervalMs;
   if (intervalMs <= 0) return;
   const auto now = std::chrono::steady_clock::now();

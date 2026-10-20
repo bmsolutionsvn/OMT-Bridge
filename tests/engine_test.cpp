@@ -118,6 +118,32 @@ TEST_CASE("the running switch stops and restarts the graph without losing rows")
   engine.stop();
 }
 
+TEST_CASE("adding the first output reopens a preview-only NDI source") {
+  ob::Engine engine(0, "token", {}, false);  // no devices: adapterStarts counts the decisions
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::Ndi, .address = "PC"});
+  engine.apply(b);
+  engine.start();
+
+  engine.graph().setThumbnailsWanted(true);  // a connected UI wants a preview
+  REQUIRE(engine.graph().hub("s1") != nullptr);
+  CHECK(engine.graph().hub("s1")->running());
+  CHECK(engine.adapterStarts() == 1u);
+
+  b.outputs.push_back(
+      ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "A"});
+  engine.apply(b);
+  CHECK(engine.adapterStarts() == 2u);  // reopened at full bandwidth for the output
+
+  b.outputs.clear();
+  engine.apply(b);
+  CHECK(engine.adapterStarts() == 3u);  // back to the low-bandwidth preview receiver
+
+  engine.graph().setThumbnailsWanted(false);
+  CHECK_FALSE(engine.graph().hub("s1")->running());
+  engine.stop();
+}
+
 #ifdef OB_WITH_NDI
 TEST_CASE("an NDI source starts a real adapter and reports Connecting") {
   ob::Engine engine(0, "token");  // adapters enabled: a real NdiSource

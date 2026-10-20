@@ -480,7 +480,17 @@ void MainWindow::rebuildSources() {
     name->setToolTip(address);
     sources_->setItem(r, 1, name);
     sources_->setItem(r, 2, new QTableWidgetItem(s.value("kind").toString()));
-    sources_->setItem(r, 3, new QTableWidgetItem(formatOf(s)));
+    auto* formatItem = new QTableWidgetItem(formatOf(s));
+    bool hasOutput = false;
+    for (const QJsonValue& ov : snapshot_.value("outputs").toArray())
+      if (ov.toObject().value("sourceId").toString() == id) {
+        hasOutput = true;
+        break;
+      }
+    if (s.value("kind").toString() == QStringLiteral("NDI") && !hasOutput)
+      formatItem->setToolTip(QStringLiteral(
+          "NDI low-bandwidth preview; an output opens the full-resolution stream."));
+    sources_->setItem(r, 3, formatItem);
     sources_->setItem(
         r, 4, new QTableWidgetItem(s.value("codec").toString(QStringLiteral("—"))));
 

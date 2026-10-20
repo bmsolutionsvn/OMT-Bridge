@@ -59,8 +59,10 @@ std::string hex(uint32_t v) {
 
 }  // namespace
 
-NdiSource::NdiSource(std::string name, FrameSink onFrame, AudioSink onAudio, StateSink onState)
+NdiSource::NdiSource(std::string name, FrameSink onFrame, AudioSink onAudio, StateSink onState,
+                     bool lowBandwidth)
     : name_(std::move(name)),
+      lowBandwidth_(lowBandwidth),
       onFrame_(std::move(onFrame)),
       onAudio_(std::move(onAudio)),
       onState_(std::move(onState)) {}
@@ -149,7 +151,11 @@ void NdiSource::run() {
         NDIlib_recv_create_v3_t settings;
         settings.source_to_connect_to = *match;
         settings.color_format = NDIlib_recv_color_format_fastest;
-        settings.bandwidth = NDIlib_recv_bandwidth_highest;
+        // Preview-only sources take NDI's low-bandwidth, lower-resolution stream (design 11);
+        // an output needs the full picture, so the engine reopens this receiver when demand
+        // crosses zero.
+        settings.bandwidth = lowBandwidth_ ? NDIlib_recv_bandwidth_lowest
+                                           : NDIlib_recv_bandwidth_highest;
         // "fastest" delivers fields regardless of this flag (Processing.NDI.Recv.h); the frame
         // check below rejects them.
         settings.allow_video_fields = false;

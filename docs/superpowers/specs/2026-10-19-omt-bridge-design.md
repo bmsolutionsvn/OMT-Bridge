@@ -319,7 +319,7 @@ Four thin adapters, all mapping to and from the UYVY/UYVA frame:
 |---|---|---|
 | `OmtSource` | `omthx::Receiver(addr, PixelFormat::Uyvy)` | reads Full **and** HX; `omthx::discover()` fills the source list; `omthx::probe()` reads format when not streaming; `premultiplied` from the frame; `VideoFrame::uyvy` plus the alpha plane |
 | `OmtSink` | `omthx::Sender::sendVideoUyvy(fmt, uyvy, stride, alpha, alphaStride, premultiplied, ts)` | `Mode::{Full,Hx}` + `Quality` + `Codec::{Hevc,H264}`; passes `premultiplied` through |
-| `NdiSource` | NDI Find + Recv | `NDIlib_recv_color_format_fastest` (UYVY, or UYVA with alpha), bandwidth highest; FLTP audio at the source's rate; NDI\|HX is decoded by the NDI SDK |
+| `NdiSource` | NDI Find + Recv | `NDIlib_recv_color_format_fastest` (UYVY, or UYVA with alpha), bandwidth `highest` when an output references the source and `lowest` while only the preview needs it (11); FLTP audio at the source's rate; NDI\|HX is decoded by the NDI SDK |
 | `NdiSink` | NDI Send | `UYVA` when alpha, else `UYVY`; straight alpha only (9.1); **Full only** |
 
 These are lifted from BreadCamera where they fit (`io/ndi_input.cpp`, `io/ndi_output.cpp`,
@@ -438,11 +438,15 @@ soft edges. Compositing straight colour onto black belongs with the alpha-conver
 - The engine sends previews only while at least one control client is connected, at the
   `thumbnailIntervalMs` setting. That demand also keeps a source adapter running when no
   output references it (6.4).
-- There is no separate low-bandwidth preview to subscribe to. `omthx::Receiver` has no preview
-  pixel format; OMT's `OMTReceiveFlags_Preview` is used only inside `probe()` (which returns a
-  format, not pixels), and an HX source is a single HEVC stream. An HX thumbnail therefore reuses
-  the full receiver's decoded frame; the interval limits the downscale and the send, not the wire
-  rate. A source with no outputs still runs its full receiver for the preview.
+- There is no separate low-bandwidth preview in `omthx`: its `Receiver` has no preview pixel
+  format, OMT's `OMTReceiveFlags_Preview` is used only inside `probe()` (which returns a format,
+  not pixels), and an HX source is a single HEVC stream. An HX thumbnail therefore reuses the
+  full receiver's decoded frame; the interval limits the downscale and the send, not the wire
+  rate. An OMT or OMT-HX source with no outputs still runs its full receiver for the preview.
+- NDI is the exception: a source with no outputs uses `NDIlib_recv_bandwidth_lowest` (lower
+  bandwidth and resolution; a 1080p source reads 640×360 in testing). When the first output
+  attaches, the engine reopens that receiver at `highest`; when the last leaves, it returns to
+  `lowest`. The thumbnail therefore comes from the small stream at almost no cost.
 
 ## 12. States, tally and errors
 
