@@ -15,6 +15,7 @@
 #include <QGuiApplication>
 #include <QHeaderView>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -34,6 +35,7 @@
 #include <QToolBar>
 #include <QVBoxLayout>
 
+#include <cstring>
 #include <filesystem>
 
 #include "core/bridge_model.h"
@@ -101,6 +103,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
   client_ = new ControlClient(this);
   connect(client_, &ControlClient::message, this, &MainWindow::onMessage);
+  connect(client_, &ControlClient::binaryMessage, this, &MainWindow::onBinaryMessage);
   connect(client_, &ControlClient::connectedChanged, this, [this] {
     connected_ = client_->connected();
     if (connected_) {
@@ -140,7 +143,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
   startOrAdopt();
   const QRect available = QGuiApplication::primaryScreen()->availableGeometry();
-  resize(qMin(1500, available.width() - 40), qMin(800, available.height() - 60));
+  resize(qMin(1680, available.width() - 40), qMin(840, available.height() - 60));
   move(available.center() - rect().center());
 }
 
@@ -178,45 +181,62 @@ void MainWindow::buildUi() {
   auto* split = new QSplitter(Qt::Horizontal, pages_);
   auto* sourcesBox = new QGroupBox(QStringLiteral("Sources"), split);
   auto* sourcesLayout = new QVBoxLayout(sourcesBox);
-  sources_ = new QTableWidget(0, 6, sourcesBox);
+  sourcesError_ = new QLabel(sourcesBox);
+  sourcesError_->setObjectName("errorBlock");
+  sourcesError_->setWordWrap(true);
+  sourcesError_->hide();
+  sourcesLayout->addWidget(sourcesError_);
+  sources_ = new QTableWidget(0, 8, sourcesBox);
   sources_->setHorizontalHeaderLabels(
-      {QStringLiteral("Source"), QStringLiteral("Kind"), QStringLiteral("Format"),
-       QStringLiteral("Codec"), QStringLiteral("State"), QString()});
+      {QStringLiteral("Preview"), QStringLiteral("Source"), QStringLiteral("Kind"),
+       QStringLiteral("Format"), QStringLiteral("Codec"), QStringLiteral("Tally"),
+       QStringLiteral("State"), QString()});
   setupTable(sources_);
-  sources_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-  sources_->horizontalHeader()->setMinimumSectionSize(60);
-  sources_->setColumnWidth(1, 64);
-  sources_->setColumnWidth(2, 108);
-  sources_->setColumnWidth(3, 64);
-  sources_->setColumnWidth(4, 104);
-  sources_->setColumnWidth(5, 72);
+  sources_->setWordWrap(false);
+  sources_->setTextElideMode(Qt::ElideRight);
+  sources_->verticalHeader()->setDefaultSectionSize(56);
+  sources_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+  sources_->horizontalHeader()->setMinimumSectionSize(54);
+  sources_->setColumnWidth(0, 96);
+  sources_->setColumnWidth(2, 58);
+  sources_->setColumnWidth(3, 112);
+  sources_->setColumnWidth(4, 58);
+  sources_->setColumnWidth(5, 54);
+  sources_->setColumnWidth(6, 98);
+  sources_->setColumnWidth(7, 68);
   sourcesLayout->addWidget(sources_);
 
   auto* outputsBox = new QGroupBox(QStringLiteral("Outputs"), split);
   auto* outputsLayout = new QVBoxLayout(outputsBox);
-  outputs_ = new QTableWidget(0, 9, outputsBox);
+  outputsError_ = new QLabel(outputsBox);
+  outputsError_->setObjectName("errorBlock");
+  outputsError_->setWordWrap(true);
+  outputsError_->hide();
+  outputsLayout->addWidget(outputsError_);
+  outputs_ = new QTableWidget(0, 10, outputsBox);
   outputs_->setHorizontalHeaderLabels(
       {QStringLiteral("Name"), QStringLiteral("Source"), QStringLiteral("Target"),
        QStringLiteral("Codec"), QStringLiteral("Quality"), QStringLiteral("Alpha"),
-       QStringLiteral("State"), QStringLiteral("Rate"), QString()});
+       QStringLiteral("State"), QStringLiteral("Rate"), QStringLiteral("Note"), QString()});
   setupTable(outputs_);
   outputs_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
   outputs_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-  outputs_->horizontalHeader()->setMinimumSectionSize(58);
-  outputs_->setColumnWidth(2, 82);
-  outputs_->setColumnWidth(3, 74);
-  outputs_->setColumnWidth(4, 78);
-  outputs_->setColumnWidth(5, 66);
-  outputs_->setColumnWidth(6, 104);
-  outputs_->setColumnWidth(7, 160);
-  outputs_->setColumnWidth(8, 76);
+  outputs_->horizontalHeader()->setMinimumSectionSize(56);
+  outputs_->setColumnWidth(2, 80);
+  outputs_->setColumnWidth(3, 72);
+  outputs_->setColumnWidth(4, 76);
+  outputs_->setColumnWidth(5, 64);
+  outputs_->setColumnWidth(6, 102);
+  outputs_->setColumnWidth(7, 158);
+  outputs_->setColumnWidth(8, 148);
+  outputs_->setColumnWidth(9, 74);
   outputsLayout->addWidget(outputs_);
 
   split->addWidget(sourcesBox);
   split->addWidget(outputsBox);
   split->setStretchFactor(0, 2);
   split->setStretchFactor(1, 4);
-  split->setSizes({560, 900});
+  split->setSizes({640, 980});
   pages_->addWidget(split);
 
   auto* matrixPage = new QWidget(pages_);
@@ -373,6 +393,34 @@ void MainWindow::onMessage(const QJsonObject& reply) {
   updatePrimary();
 }
 
+void MainWindow::onBinaryMessage(const QByteArray& payload) {
+  if (payload.size() < 6 || std::memcmp(payload.constData(), "OBT1", 4) != 0) return;
+  const int headerSize = static_cast<unsigned char>(payload[4]) |
+                         (static_cast<unsigned char>(payload[5]) << 8);
+  if (payload.size() < 6 + headerSize) return;
+  const QJsonDocument doc = QJsonDocument::fromJson(payload.mid(6, headerSize));
+  if (!doc.isObject()) return;
+  const QJsonObject header = doc.object();
+  const QString id = header.value("sourceId").toString();
+  const int width = header.value("width").toInt();
+  const int height = header.value("height").toInt();
+  const qsizetype pixels = static_cast<qsizetype>(width) * height * 4;
+  if (id.isEmpty() || width < 2 || height < 2 || payload.size() != 6 + headerSize + pixels)
+    return;
+
+  const QImage image(reinterpret_cast<const uchar*>(payload.constData() + 6 + headerSize),
+                     width, height, width * 4, QImage::Format_ARGB32);
+  thumbnails_.insert(id, image.copy());
+
+  const int row = sourceIds_.indexOf(id);
+  if (row < 0) return;  // the next state reply paints it from thumbnails_
+  if (auto* label = qobject_cast<QLabel*>(sources_->cellWidget(row, 0))) {
+    label->setPixmap(
+        QPixmap::fromImage(image).scaled(92, 52, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    label->setText(QString());
+  }
+}
+
 void MainWindow::applyState(const QJsonObject& state) {
   snapshot_ = state;
   running_ = state.value("running").toBool(false);
@@ -384,6 +432,8 @@ void MainWindow::applyState(const QJsonObject& state) {
   for (const QJsonValue& v : state.value("sources").toArray())
     sids << v.toObject().value("id").toString();
   sourceIds_ = sids;
+  for (auto it = thumbnails_.begin(); it != thumbnails_.end();)
+    it = sids.contains(it.key()) ? std::next(it) : thumbnails_.erase(it);
   rebuildSources();
 
   QStringList oids;
@@ -398,6 +448,7 @@ void MainWindow::applyState(const QJsonObject& state) {
   }
 
   rebuildMatrix();
+  updateBands();
   if (dirty_) saveBridgeNow();
   updatePrimary();
   updateStatus();
@@ -411,23 +462,48 @@ void MainWindow::rebuildSources() {
     const QString id = s.value("id").toString();
     const QString address = s.value("address").toString();
 
+    auto* thumb = new QLabel(sources_);
+    thumb->setFixedSize(92, 52);
+    thumb->setAlignment(Qt::AlignCenter);
+    thumb->setStyleSheet(QStringLiteral(
+        "background:#0B0E11;border:1px solid #26323D;border-radius:3px;color:#46525E;"));
+    const auto image = thumbnails_.constFind(id);
+    if (image != thumbnails_.constEnd() && !image->isNull()) {
+      thumb->setPixmap(QPixmap::fromImage(*image).scaled(92, 52, Qt::KeepAspectRatio,
+                                                         Qt::SmoothTransformation));
+    } else {
+      thumb->setText(QStringLiteral("—"));
+    }
+    sources_->setCellWidget(r, 0, thumb);
+
     auto* name = new QTableWidgetItem(address);
-    name->setToolTip(id);
-    sources_->setItem(r, 0, name);
-    sources_->setItem(r, 1, new QTableWidgetItem(s.value("kind").toString()));
-    sources_->setItem(r, 2, new QTableWidgetItem(formatOf(s)));
-    sources_->setItem(r, 3,
-                      new QTableWidgetItem(s.value("codec").toString(QStringLiteral("—"))));
+    name->setToolTip(address);
+    sources_->setItem(r, 1, name);
+    sources_->setItem(r, 2, new QTableWidgetItem(s.value("kind").toString()));
+    sources_->setItem(r, 3, new QTableWidgetItem(formatOf(s)));
+    sources_->setItem(
+        r, 4, new QTableWidgetItem(s.value("codec").toString(QStringLiteral("—"))));
+
+    const bool program = s.value("program").toBool();
+    const bool preview = s.value("preview").toBool();
+    auto* tally = new QTableWidgetItem(
+        program ? QStringLiteral("PGM") : (preview ? QStringLiteral("PVW") : QStringLiteral("—")));
+    tally->setTextAlignment(Qt::AlignCenter);
+    if (program)
+      tally->setForeground(QColor("#EF4444"));
+    else if (preview)
+      tally->setForeground(QColor("#FBBF24"));
+    sources_->setItem(r, 5, tally);
 
     auto* pill = new SignalPill(sources_);
     pill->setState(s.value("state").toString(QStringLiteral("ready")));
-    sources_->setCellWidget(r, 4, pill);
+    sources_->setCellWidget(r, 6, pill);
 
     auto* remove = new QPushButton(QStringLiteral("Remove"), sources_);
     remove->setObjectName("danger");
     connect(remove, &QPushButton::clicked, this,
             [this, id, address] { onRemoveSource(id, address); });
-    sources_->setCellWidget(r, 5, remove);
+    sources_->setCellWidget(r, 7, remove);
   }
 }
 
@@ -475,6 +551,9 @@ void MainWindow::rebuildOutputs() {
     rate->setObjectName("mono");
     rate->setToolTip(o.value("note").toString());
 
+    auto* note = new QTableWidgetItem(o.value("note").toString());
+    note->setToolTip(o.value("note").toString());
+
     auto* remove = new QPushButton(QStringLiteral("Remove"), outputs_);
     remove->setObjectName("danger");
 
@@ -486,7 +565,8 @@ void MainWindow::rebuildOutputs() {
     outputs_->setCellWidget(r, 5, alpha);
     outputs_->setCellWidget(r, 6, pill);
     outputs_->setCellWidget(r, 7, rate);
-    outputs_->setCellWidget(r, 8, remove);
+    outputs_->setItem(r, 8, note);
+    outputs_->setCellWidget(r, 9, remove);
 
     connect(name, &QLineEdit::editingFinished, this, [this, id, name] {
       const QString text = name->text().trimmed();
@@ -525,6 +605,10 @@ void MainWindow::updateOutputRuntime() {
       rate->setText(rateText(o));
       rate->setToolTip(o.value("note").toString());
     }
+    if (auto* note = outputs_->item(r, 8)) {
+      note->setText(o.value("note").toString());
+      note->setToolTip(o.value("note").toString());
+    }
   }
 }
 
@@ -552,6 +636,30 @@ void MainWindow::rebuildMatrix() {
   }
   matrix_->resizeColumnsToContents();
   matrix_->resizeRowsToContents();
+}
+
+void MainWindow::updateBands() {
+  QStringList sourceLines;
+  QStringList outputLines;
+  for (const QJsonValue& v : snapshot_.value("sources").toArray()) {
+    const QJsonObject s = v.toObject();
+    const QString error = s.value("error").toString();
+    if (!error.isEmpty())
+      sourceLines << QStringLiteral("%1: %2").arg(s.value("address").toString(), error);
+  }
+  for (const QJsonValue& v : snapshot_.value("outputs").toArray()) {
+    const QJsonObject o = v.toObject();
+    const QString note = o.value("note").toString();
+    // "alpha dropped" is a per-frame label (design 9.3), not a system error.
+    if (!note.isEmpty() && !note.startsWith(QStringLiteral("alpha dropped")))
+      outputLines << QStringLiteral("%1: %2").arg(o.value("name").toString(), note);
+  }
+  const auto apply = [](QLabel* label, const QStringList& lines) {
+    label->setText(lines.join('\n'));
+    label->setVisible(!lines.isEmpty());
+  };
+  apply(sourcesError_, sourceLines);
+  apply(outputsError_, outputLines);
 }
 
 void MainWindow::updatePrimary() {

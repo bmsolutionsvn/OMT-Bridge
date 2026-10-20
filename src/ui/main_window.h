@@ -4,6 +4,9 @@
 // lifecycle and talks to it only through the WebSocket control channel.
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QByteArray>
+#include <QHash>
+#include <QImage>
 #include <QMainWindow>
 #include <QStringList>
 #include <functional>
@@ -40,11 +43,13 @@ class MainWindow : public QMainWindow {
   void requestState();
 
   void onMessage(const QJsonObject& reply);
+  void onBinaryMessage(const QByteArray& payload);
   void applyState(const QJsonObject& state);
   void rebuildSources();
   void rebuildOutputs();
   void updateOutputRuntime();
   void rebuildMatrix();
+  void updateBands();
   void updatePrimary();
   void updateStatus();
   void showError(const QString& text);
@@ -78,8 +83,11 @@ class MainWindow : public QMainWindow {
   QLabel* engineLabel_ = nullptr;
   QLabel* rateLabel_ = nullptr;
   QLabel* error_ = nullptr;
+  QLabel* sourcesError_ = nullptr;
+  QLabel* outputsError_ = nullptr;
 
   QJsonObject snapshot_;
+  QHash<QString, QImage> thumbnails_;
   QStringList sourceIds_;
   QStringList outputIds_;
   QStringList comboSourceIds_;

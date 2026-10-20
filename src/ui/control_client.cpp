@@ -28,6 +28,14 @@ ControlClient::ControlClient(QObject* parent) : QObject(parent), ws_(std::make_u
             if (doc.isObject()) emit message(doc.object());
           },
           Qt::QueuedConnection);
+    } else if (msg->type == ix::WebSocketMessageType::Message && msg->binary) {
+      const std::string data = msg->str;
+      QMetaObject::invokeMethod(
+          this,
+          [this, data] {
+            emit binaryMessage(QByteArray(data.data(), static_cast<int>(data.size())));
+          },
+          Qt::QueuedConnection);
     } else if (msg->type == ix::WebSocketMessageType::Close ||
                msg->type == ix::WebSocketMessageType::Error) {
       QMetaObject::invokeMethod(
