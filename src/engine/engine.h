@@ -68,6 +68,9 @@ class Engine {
   void startAdapter(const std::string& sourceId);  // controlMu_ held
   void pollTally();                                // controlMu_ held
   void stopAdapter(const std::string& sourceId);   // controlMu_ held
+  // OMT names plus one NDI find; the NDI branch waits at most one second, so this blocks a
+  // control command for that long. controlMu_ held.
+  Discovery discover();
 
   int controlPort_;
   std::string token_;

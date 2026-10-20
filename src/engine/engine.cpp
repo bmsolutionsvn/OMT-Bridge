@@ -4,8 +4,15 @@
 #include <utility>
 #include <vector>
 
+#include <omthx/omthx.h>
+
 #include "core/bridge_store.h"
 #include "engine/ndi_sink.h"
+#ifdef OB_WITH_NDI
+#include <Processing.NDI.Lib.h>
+
+#include "engine/ndi_runtime.h"
+#endif
 
 namespace ob {
 
@@ -33,6 +40,7 @@ Engine::Engine(int controlPort, std::string token, std::string bridgeFile, bool 
           [this](SourceHub& hub, const Source& s) { onHubCreated(hub, s); }) {
   router_.setRuntime([this](const std::string& id) { return sourceRuntime(id); },
                      [this](const std::string& id) { return outputRuntime(id); });
+  router_.setDiscovery([this] { return discover(); });
 }
 
 Engine::~Engine() { stop(); }
@@ -181,6 +189,23 @@ std::optional<SourceRuntime> Engine::sourceRuntime(const std::string& id) {
     }
   }
   return rt;
+}
+
+Discovery Engine::discover() {
+  Discovery found;
+  found.omt = omthx::discover();
+#ifdef OB_WITH_NDI
+  if (!ensureNdi()) return found;
+  NDIlib_find_instance_t find = NDIlib_find_create_v2(nullptr);
+  if (find == nullptr) return found;
+  NDIlib_find_wait_for_sources(find, 1000);  // the documented blocking bound
+  uint32_t count = 0;
+  const NDIlib_source_t* sources = NDIlib_find_get_current_sources(find, &count);
+  for (uint32_t i = 0; sources != nullptr && i < count; ++i)
+    if (sources[i].p_ndi_name != nullptr) found.ndi.emplace_back(sources[i].p_ndi_name);
+  NDIlib_find_destroy(find);
+#endif
+  return found;
 }
 
 void Engine::pollTally() {

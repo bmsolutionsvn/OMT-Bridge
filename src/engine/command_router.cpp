@@ -43,6 +43,8 @@ void CommandRouter::setRuntime(SourceRuntimeFn sources, OutputRuntimeFn outputs)
   outputRuntime_ = std::move(outputs);
 }
 
+void CommandRouter::setDiscovery(DiscoveryFn discovery) { discovery_ = std::move(discovery); }
+
 std::string CommandRouter::handle(const ClientId&, const std::string& text) {
   // ONE try around the whole body. Every field read below (j.value(...), j["id"], ...) throws
   // nlohmann's type_error.302 on a wrong-typed value — `{"cmd":"add-output","sourceId":42}` — and
@@ -99,7 +101,16 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
         }
         outputs.push_back(std::move(row));
       }
-      return json{{"ok", true}, {"name", bridge_.name}, {"sources", sources}, {"outputs", outputs}}.dump();
+      return json{{"ok", true},
+                  {"name", bridge_.name},
+                  {"sources", sources},
+                  {"outputs", outputs},
+                  {"settings",
+                   {{"defaultTarget", std::string(toString(bridge_.settings.defaultTarget))},
+                    {"defaultQuality", std::string(toString(bridge_.settings.defaultQuality))},
+                    {"thumbnailIntervalMs", bridge_.settings.thumbnailIntervalMs},
+                    {"startEngineWithApp", bridge_.settings.startEngineWithApp}}}}
+          .dump();
     }
 
     if (cmd == "add-source") {
@@ -157,6 +168,162 @@ std::string CommandRouter::handle(const ClientId&, const std::string& text) {
         return refuse("set-output-source: no such source: " + sid);
       o->sourceId = sid;
       return json{{"ok", true}}.dump();
+    }
+
+    if (cmd == "set-output") {
+      if (!j.contains("id") || !j["id"].is_string()) return refuse("set-output needs a text \"id\"");
+      const std::string id = j["id"];
+      Output* o = bridge_.findOutput(id);
+      if (o == nullptr) return refuse("set-output: no such output: " + id);
+
+      // Validate every field before assigning any: a command that names a bad target must change
+      // nothing, not half of the row.
+      std::optional<std::string> sourceId;
+      if (j.contains("sourceId")) {
+        if (!j["sourceId"].is_string()) return refuse("set-output: \"sourceId\" must be text");
+        const std::string sid = j["sourceId"];
+        if (!sid.empty() && bridge_.findSource(sid) == nullptr)
+          return refuse("set-output: no such source: " + sid);
+        sourceId = sid;
+      }
+      std::optional<OutputTarget> target;
+      if (j.contains("target")) {
+        if (!j["target"].is_string()) return refuse("set-output: \"target\" must be text");
+        const auto parsed = outputTargetFromString(j["target"].get<std::string>());
+        if (!parsed) return refuse("set-output: unknown \"target\": " + j["target"].get<std::string>());
+        target = *parsed;
+      }
+      std::optional<HxCodec> codec;
+      if (j.contains("codec")) {
+        if (!j["codec"].is_string()) return refuse("set-output: \"codec\" must be text");
+        const auto parsed = hxCodecFromString(j["codec"].get<std::string>());
+        if (!parsed) return refuse("set-output: unknown \"codec\": " + j["codec"].get<std::string>());
+        codec = *parsed;
+      }
+      std::optional<Quality> quality;
+      if (j.contains("quality")) {
+        if (!j["quality"].is_string()) return refuse("set-output: \"quality\" must be text");
+        const auto parsed = qualityFromString(j["quality"].get<std::string>());
+        if (!parsed) return refuse("set-output: unknown \"quality\": " + j["quality"].get<std::string>());
+        quality = *parsed;
+      }
+      std::optional<AlphaMode> alpha;
+      if (j.contains("alpha")) {
+        if (!j["alpha"].is_string()) return refuse("set-output: \"alpha\" must be text");
+        const auto parsed = alphaModeFromString(j["alpha"].get<std::string>());
+        if (!parsed) return refuse("set-output: unknown \"alpha\": " + j["alpha"].get<std::string>());
+        alpha = *parsed;
+      }
+      std::optional<std::string> name;
+      if (j.contains("name")) {
+        if (!j["name"].is_string()) return refuse("set-output: \"name\" must be text");
+        const std::string parsed = j["name"];
+        if (parsed.empty()) return refuse("set-output: \"name\" must not be empty");
+        name = parsed;
+      }
+
+      if (sourceId) o->sourceId = *sourceId;
+      if (target) o->target = *target;
+      if (codec) o->codec = *codec;
+      if (quality) o->quality = *quality;
+      if (alpha) o->alpha = *alpha;
+      if (name) o->name = *name;
+      return json{{"ok", true}}.dump();
+    }
+
+    if (cmd == "remove-output") {
+      if (!j.contains("id") || !j["id"].is_string()) return refuse("remove-output needs a text \"id\"");
+      const std::string id = j["id"];
+      if (bridge_.findOutput(id) == nullptr) return refuse("remove-output: no such output: " + id);
+      bridge_.outputs.erase(
+          std::remove_if(bridge_.outputs.begin(), bridge_.outputs.end(),
+                         [&](const Output& o) { return o.id == id; }),
+          bridge_.outputs.end());
+      return json{{"ok", true}}.dump();
+    }
+
+    if (cmd == "set-source") {
+      if (!j.contains("id") || !j["id"].is_string()) return refuse("set-source needs a text \"id\"");
+      const std::string id = j["id"];
+      Source* s = bridge_.findSource(id);
+      if (s == nullptr) return refuse("set-source: no such source: " + id);
+
+      std::optional<SourceKind> kind;
+      if (j.contains("kind")) {
+        if (!j["kind"].is_string()) return refuse("set-source: \"kind\" must be text");
+        const auto parsed = sourceKindFromString(j["kind"].get<std::string>());
+        if (!parsed) return refuse("set-source: unknown \"kind\": " + j["kind"].get<std::string>());
+        kind = *parsed;
+      }
+      std::optional<std::string> address;
+      if (j.contains("address")) {
+        if (!j["address"].is_string()) return refuse("set-source: \"address\" must be text");
+        const std::string parsed = j["address"];
+        if (parsed.empty()) return refuse("set-source: \"address\" must not be empty");
+        address = parsed;
+      }
+      // codec is optional by nature: absent leaves it, null clears it (an OMT or NDI source).
+      const bool codecPresent = j.contains("codec");
+      std::optional<HxCodec> codec;
+      if (codecPresent && !j["codec"].is_null()) {
+        if (!j["codec"].is_string()) return refuse("set-source: \"codec\" must be text or null");
+        const auto parsed = hxCodecFromString(j["codec"].get<std::string>());
+        if (!parsed) return refuse("set-source: unknown \"codec\": " + j["codec"].get<std::string>());
+        codec = *parsed;
+      }
+
+      if (kind) s->kind = *kind;
+      if (address) s->address = *address;
+      if (codecPresent) s->codec = codec;
+      return json{{"ok", true}}.dump();
+    }
+
+    if (cmd == "set-settings") {
+      std::optional<OutputTarget> target;
+      if (j.contains("defaultTarget")) {
+        if (!j["defaultTarget"].is_string()) return refuse("set-settings: \"defaultTarget\" must be text");
+        const auto parsed = outputTargetFromString(j["defaultTarget"].get<std::string>());
+        if (!parsed)
+          return refuse("set-settings: unknown \"defaultTarget\": " +
+                        j["defaultTarget"].get<std::string>());
+        target = *parsed;
+      }
+      std::optional<Quality> quality;
+      if (j.contains("defaultQuality")) {
+        if (!j["defaultQuality"].is_string())
+          return refuse("set-settings: \"defaultQuality\" must be text");
+        const auto parsed = qualityFromString(j["defaultQuality"].get<std::string>());
+        if (!parsed)
+          return refuse("set-settings: unknown \"defaultQuality\": " +
+                        j["defaultQuality"].get<std::string>());
+        quality = *parsed;
+      }
+      std::optional<int> interval;
+      if (j.contains("thumbnailIntervalMs")) {
+        if (!j["thumbnailIntervalMs"].is_number_integer())
+          return refuse("set-settings: \"thumbnailIntervalMs\" must be an integer");
+        const long long parsed = j["thumbnailIntervalMs"].get<long long>();
+        if (parsed < 0 || parsed > 60000)
+          return refuse("set-settings: \"thumbnailIntervalMs\" must be 0..60000");
+        interval = static_cast<int>(parsed);
+      }
+      std::optional<bool> startWithApp;
+      if (j.contains("startEngineWithApp")) {
+        if (!j["startEngineWithApp"].is_boolean())
+          return refuse("set-settings: \"startEngineWithApp\" must be true or false");
+        startWithApp = j["startEngineWithApp"].get<bool>();
+      }
+
+      if (target) bridge_.settings.defaultTarget = *target;
+      if (quality) bridge_.settings.defaultQuality = *quality;
+      if (interval) bridge_.settings.thumbnailIntervalMs = *interval;
+      if (startWithApp) bridge_.settings.startEngineWithApp = *startWithApp;
+      return json{{"ok", true}}.dump();
+    }
+
+    if (cmd == "discover") {
+      const Discovery found = discovery_ ? discovery_() : Discovery{};
+      return json{{"ok", true}, {"omt", found.omt}, {"ndi", found.ndi}}.dump();
     }
 
     return refuse("unknown command: " + cmd);

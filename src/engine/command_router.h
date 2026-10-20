@@ -6,6 +6,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "core/bridge_model.h"
 #include "core/signal_state.h"
@@ -36,6 +37,14 @@ struct OutputRuntime {
 using SourceRuntimeFn = std::function<std::optional<SourceRuntime>(const std::string& id)>;
 using OutputRuntimeFn = std::function<std::optional<OutputRuntime>(const std::string& id)>;
 
+// What the engine's discovery found, as the names the UI offers. The router only formats it.
+struct Discovery {
+  std::vector<std::string> omt;
+  std::vector<std::string> ndi;
+};
+// May block for the transport's find timeout (NDI: at most 1 s); the UI shows progress.
+using DiscoveryFn = std::function<Discovery()>;
+
 class CommandRouter {
  public:
   // Wholly synchronous: no engine threads, so the tests can call it directly.
@@ -49,11 +58,13 @@ class CommandRouter {
 
   // Runtime liveness is supplied by the engine; the router only formats it.
   void setRuntime(SourceRuntimeFn sources, OutputRuntimeFn outputs);
+  void setDiscovery(DiscoveryFn discovery);
 
  private:
   Bridge bridge_;
   SourceRuntimeFn sourceRuntime_;
   OutputRuntimeFn outputRuntime_;
+  DiscoveryFn discovery_;
   // Sources and outputs number independently (s1, s2, … and o1, o2, …): the prefixes exist
   // precisely to tell the two kinds apart, so a shared counter would mint "o2" for a first output.
   uint64_t nextSourceId_ = 1;

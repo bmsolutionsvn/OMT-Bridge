@@ -147,6 +147,121 @@ TEST_CASE("state reports measured output rate and connections") {
   CHECK(reply.find("\"connections\":2") != std::string::npos);
 }
 
+TEST_CASE("set-output edits a row and refuses an unknown one") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"OMT","address":"PC"})");
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-output","sourceId":"s1","name":"A"})");
+
+  const auto reply = router.handle(
+      ob::ClientId{"c1"},
+      R"({"cmd":"set-output","id":"o1","name":"Program","target":"NDI","codec":"H.264","quality":"High","alpha":"Off","sourceId":""})");
+  CHECK(reply.find("\"ok\":true") != std::string::npos);
+  REQUIRE(router.bridge().outputs.size() == 1u);
+  CHECK(router.bridge().outputs[0].name == "Program");
+  CHECK(static_cast<int>(router.bridge().outputs[0].target) == static_cast<int>(ob::OutputTarget::Ndi));
+  CHECK(static_cast<int>(router.bridge().outputs[0].codec) == static_cast<int>(ob::HxCodec::H264));
+  CHECK(static_cast<int>(router.bridge().outputs[0].quality) == static_cast<int>(ob::Quality::High));
+  CHECK(static_cast<int>(router.bridge().outputs[0].alpha) == static_cast<int>(ob::AlphaMode::Off));
+  CHECK(router.bridge().outputs[0].sourceId.empty());
+
+  const auto missing =
+      router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-output","id":"o9","name":"X"})");
+  CHECK(missing.find("\"ok\":false") != std::string::npos);
+  CHECK(missing.find("no such output") != std::string::npos);
+  CHECK(router.bridge().outputs.size() == 1u);  // nothing minted
+}
+
+TEST_CASE("a bad enum in set-output is named and changes nothing") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-output","name":"A"})");
+  const auto reply =
+      router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-output","id":"o1","target":"OMTX","name":"B"})");
+  CHECK(reply.find("\"ok\":false") != std::string::npos);
+  CHECK(reply.find("OMTX") != std::string::npos);
+  CHECK(router.bridge().outputs[0].name == "A");  // the valid field was not applied either
+  CHECK(static_cast<int>(router.bridge().outputs[0].target) == static_cast<int>(ob::OutputTarget::Omt));
+}
+
+TEST_CASE("remove-output removes the row and refuses the second time") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-output","name":"A"})");
+  const auto first = router.handle(ob::ClientId{"c1"}, R"({"cmd":"remove-output","id":"o1"})");
+  CHECK(first.find("\"ok\":true") != std::string::npos);
+  CHECK(router.bridge().outputs.empty());
+  const auto second = router.handle(ob::ClientId{"c1"}, R"({"cmd":"remove-output","id":"o1"})");
+  CHECK(second.find("\"ok\":false") != std::string::npos);
+  CHECK(second.find("no such output") != std::string::npos);
+}
+
+TEST_CASE("set-source edits kind, address and codec, and rejects an unknown id") {
+  ob::CommandRouter router;
+  router.handle(ob::ClientId{"c1"}, R"({"cmd":"add-source","kind":"OMT","address":"PC"})");
+
+  const auto reply = router.handle(
+      ob::ClientId{"c1"},
+      R"j({"cmd":"set-source","id":"s1","kind":"OMT-HX","address":"PC (Cam)","codec":"H.264"})j");
+  CHECK(reply.find("\"ok\":true") != std::string::npos);
+  CHECK(static_cast<int>(router.bridge().sources[0].kind) == static_cast<int>(ob::SourceKind::OmtHx));
+  CHECK(router.bridge().sources[0].address == "PC (Cam)");
+  REQUIRE(router.bridge().sources[0].codec.has_value());
+  CHECK(static_cast<int>(*router.bridge().sources[0].codec) == static_cast<int>(ob::HxCodec::H264));
+
+  const auto cleared = router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-source","id":"s1","codec":null})");
+  CHECK(cleared.find("\"ok\":true") != std::string::npos);
+  CHECK_FALSE(router.bridge().sources[0].codec.has_value());
+
+  const auto missing =
+      router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-source","id":"s9","address":"X"})");
+  CHECK(missing.find("no such source") != std::string::npos);
+
+  const auto bad = router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-source","id":"s1","kind":"?"})");
+  CHECK(bad.find("\"ok\":false") != std::string::npos);
+  const auto emptyAddress =
+      router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-source","id":"s1","address":""})");
+  CHECK(emptyAddress.find("\"ok\":false") != std::string::npos);
+}
+
+TEST_CASE("set-settings round-trips through state and rejects bad values") {
+  ob::CommandRouter router;
+  router.handle(
+      ob::ClientId{"c1"},
+      R"({"cmd":"set-settings","defaultTarget":"NDI","defaultQuality":"High","thumbnailIntervalMs":500,"startEngineWithApp":true})");
+
+  const auto state = router.handle(ob::ClientId{"c1"}, R"({"cmd":"state"})");
+  CHECK(state.find("\"defaultTarget\":\"NDI\"") != std::string::npos);
+  CHECK(state.find("\"defaultQuality\":\"High\"") != std::string::npos);
+  CHECK(state.find("\"thumbnailIntervalMs\":500") != std::string::npos);
+  CHECK(state.find("\"startEngineWithApp\":true") != std::string::npos);
+
+  const auto badTarget =
+      router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-settings","defaultTarget":"OMTX"})");
+  CHECK(badTarget.find("\"ok\":false") != std::string::npos);
+  const auto badInterval =
+      router.handle(ob::ClientId{"c1"}, R"({"cmd":"set-settings","thumbnailIntervalMs":-1})");
+  CHECK(badInterval.find("\"ok\":false") != std::string::npos);
+  // The refusals changed nothing.
+  CHECK(static_cast<int>(router.bridge().settings.defaultTarget) == static_cast<int>(ob::OutputTarget::Ndi));
+  CHECK(router.bridge().settings.thumbnailIntervalMs == 500);
+}
+
+TEST_CASE("discover returns the provider's names, and empty lists without one") {
+  ob::CommandRouter router;
+  const auto bare = router.handle(ob::ClientId{"c1"}, R"({"cmd":"discover"})");
+  CHECK(bare.find("\"ok\":true") != std::string::npos);
+  CHECK(bare.find("\"omt\":[]") != std::string::npos);
+  CHECK(bare.find("\"ndi\":[]") != std::string::npos);
+
+  router.setDiscovery([] {
+    ob::Discovery d;
+    d.omt = {"PC (Cam)"};
+    d.ndi = {"MACHINE (Camera)"};
+    return d;
+  });
+  const auto found = router.handle(ob::ClientId{"c1"}, R"({"cmd":"discover"})");
+  CHECK(found.find("PC (Cam)") != std::string::npos);
+  CHECK(found.find("MACHINE (Camera)") != std::string::npos);
+}
+
 TEST_CASE("setBridge seeds the id counter past a loaded model") {
   ob::CommandRouter router;
   ob::Bridge loaded;
