@@ -7,7 +7,7 @@ source's rate), then checked against the workspace: OMT-HX `b58414b` already pro
 UYVY/UYVA API with tests, libomt and NDI share the `UYVY`/`UYVA`/`P216`/`PA16` FourCC
 values, and the OMT-HX measurement figures are real. Updated again 2026-10-19 for OMT-HX
 `ae96aa1`: one frame less latency per HX hop, new measured figures (6.3, 16), and the
-coded-relay and GPU re-code paths the library now has (18.8, 18.9). Updated again 2026-10-21 for OMT-HX `e21dc52`: HX alpha travels as a separate VMX stream (9), and the library gained a C API for the OBS plugin.
+coded-relay and GPU re-code paths the library now has (18.8, 18.9). Updated again 2026-10-21 for OMT-HX `e21dc52`: HX alpha travels as a separate VMX stream (9), and the library gained a C API for the OBS plugin. Updated again for `e94ca7a`: the low-bandwidth preview stream (11).
 Upstream repository: https://github.com/bmsolutionsvn/OMT-Bridge (MIT).
 
 This is a new product in the BM Solutions ecosystem, beside BreadStream, BreadCall,
@@ -90,7 +90,7 @@ Locked with the owner on 2026-10-19.
 - Audio passthrough with the source's channel count and sample rate.
 - Tally passed upstream: a source is on air when an output it feeds is on air downstream.
 - Use of the UYVY/UYVA API `omthx` already provides (OMT-HX `b58414b`, additive to its
-  BGRA API and already under its own tests), at OMT-HX `e21dc52` or later (14.3).
+  BGRA API and already under its own tests), at OMT-HX `e94ca7a` or later (14.3).
 
 ### 3.2 Out of v1, named so nothing is assumed
 
@@ -239,7 +239,7 @@ OMT-HX publishes no separate no-alpha or unpack timings, so none are quoted here
 measures the bridge's own per-output cost (Section 16).
 
 OMT-HX's tests already cover the UYVY/UYVA round trip; OMT Bridge's task is to **consume**
-this API, not add it. Pin OMT-HX at `e21dc52` or later (14.3).
+this API, not add it. Pin OMT-HX at `e94ca7a` or later (14.3).
 
 ### 6.4 SourceHub
 
@@ -317,7 +317,7 @@ Four thin adapters, all mapping to and from the UYVY/UYVA frame:
 
 | Adapter | Wraps | Notes |
 |---|---|---|
-| `OmtSource` | `omthx::Receiver(addr, PixelFormat::Uyvy)` | reads Full **and** HX; `omthx::discover()` fills the source list; `omthx::probe()` reads format when not streaming; `premultiplied` from the frame; `VideoFrame::uyvy` plus the alpha plane |
+| `OmtSource` | `omthx::Receiver(addr, PixelFormat::Uyvy, preview)` | reads Full **and** HX; `omthx::discover()` fills the source list; `omthx::probe()` reads format when not streaming; `premultiplied` from the frame; `VideoFrame::uyvy` plus the alpha plane |
 | `OmtSink` | `omthx::Sender::sendVideoUyvy(fmt, uyvy, stride, alpha, alphaStride, premultiplied, ts)` | `Mode::{Full,Hx}` + `Quality` + `Codec::{Hevc,H264}`; passes `premultiplied` through |
 | `NdiSource` | NDI Find + Recv | `NDIlib_recv_color_format_fastest` (UYVY, or UYVA with alpha), bandwidth `highest` when an output references the source and `lowest` while only the preview needs it (11); FLTP audio at the source's rate; NDI\|HX is decoded by the NDI SDK |
 | `NdiSink` | NDI Send | `UYVA` when alpha, else `UYVY`; straight alpha only (9.1); **Full only** |
@@ -438,15 +438,15 @@ soft edges. Compositing straight colour onto black belongs with the alpha-conver
 - The engine sends previews only while at least one control client is connected, at the
   `thumbnailIntervalMs` setting. That demand also keeps a source adapter running when no
   output references it (6.4).
-- There is no separate low-bandwidth preview in `omthx`: its `Receiver` has no preview pixel
-  format, OMT's `OMTReceiveFlags_Preview` is used only inside `probe()` (which returns a format,
-  not pixels), and an HX source is a single HEVC stream. An HX thumbnail therefore reuses the
-  full receiver's decoded frame; the interval limits the downscale and the send, not the wire
-  rate. An OMT or OMT-HX source with no outputs still runs its full receiver for the preview.
-- NDI is the exception: a source with no outputs uses `NDIlib_recv_bandwidth_lowest` (lower
-  bandwidth and resolution; a 1080p source reads 640×360 in testing). When the first output
-  attaches, the engine reopens that receiver at `highest`; when the last leaves, it returns to
-  `lowest`. The thumbnail therefore comes from the small stream at almost no cost.
+- OMT and OMT-HX ask for the small picture: `Receiver(address, pixels, true)` makes a plain OMT
+  source send its VMX preview, and an HX source a second ~640-wide stream (the fill only, without
+  alpha), coded only while a preview receiver is connected. A source with no outputs is opened
+  this way; the first output reopens the receiver at full size, and removing the last output
+  returns it to preview.
+- NDI's equivalent is `NDIlib_recv_bandwidth_lowest` (lower bandwidth and resolution; a 1080p
+  source reads 640x360 in testing). When the first output attaches, the engine reopens that
+  receiver at `highest`; when the last leaves, it returns to `lowest`. The thumbnail therefore
+  comes from the small stream at almost no cost.
 
 ## 12. States, tally and errors
 
@@ -545,7 +545,7 @@ virtual camera, preview service.
 
 | Dependency | How | Notes |
 |---|---|---|
-| OMT-HX | git submodule; `add_subdirectory`; `target_link_libraries(... omthx)`; `omthx_copy_runtime(...)` | brings `libomt.dll`, `libvmx.dll`; **pinned at `e21dc52` or later**: the UYVY/UYVA API (6.3), the same-call encoder packets that took a frame out of every HX hop (16), and HX alpha as a separate VMX stream (9) |
+| OMT-HX | git submodule; `add_subdirectory`; `target_link_libraries(... omthx)`; `omthx_copy_runtime(...)` | brings `libomt.dll`, `libvmx.dll`; **pinned at `e94ca7a` or later**: the UYVY/UYVA API (6.3), the same-call encoder packets that took a frame out of every HX hop (16), HX alpha as a separate VMX stream (9), and the low-bandwidth preview stream (11) |
 | FFmpeg (`avcodec`, `swscale`, `nvcodec`, `amf`) | vcpkg | required by OMT-HX |
 | NDI 6 SDK | found where installed, like BreadCamera's `cmake/FindNDI.cmake` (`NDI_SDK_DIR`, else `C:/Program Files/NDI/NDI 6 SDK`); the runtime DLL is copied beside the exe | guarded by `OB_WITH_NDI`, mirroring `BC_WITH_NDI`. The `BreadStudio/breadstudio/ndi/ndi-sdk` copy is **headers only** and cannot be linked, so it is not the pattern to follow (18.2, 18.5) |
 | Qt 6 (`qtbase`, Widgets) | vcpkg | **LGPLv3 — dynamically linked; Qt DLLs shipped, never statically linked** |
@@ -686,7 +686,7 @@ and multi-output soaks remain to be run.
 | Risk | Mitigation |
 |---|---|
 | NDI `UYVA` turns out premultiplied → fringing on keyed NDI | `BGRA` is documented straight; `UYVA` is the one assumption, isolated in `toStraight()` and the 9.1 table, checked in the smoke test before M3 ships (18.1) |
-| A newer OMT-HX breaks BreadCamera or BreadStudio | Additive API only; OMT-HX's tests must pass, and both apps are rebuilt and tested against the pinned commit (last done at `ae96aa1`; `e21dc52` needs a BreadCamera/BreadStudio rebuild before either ships) |
+| A newer OMT-HX breaks BreadCamera or BreadStudio | Additive API only; OMT-HX's tests must pass, and both apps are rebuilt and tested against the pinned commit (last done at `ae96aa1`; `e94ca7a` is additive for senders, and the OBS plugin was rebuilt against it) |
 | CPU work per HX hop caps usable outputs at a handful | UYVY path removes the colour matrix; remaining cost measured in M2 and documented; GPU converter already lifted into the repo for the next milestone |
 | Alpha flapping on a source that is opaque some of the time | 2 s hysteresis before dropping alpha (9.2) |
 | Qt LGPL and NDI SDK redistribution terms | Qt dynamically linked only; NDI runtime shipped per SDK terms, or required as a prerequisite if terms do not allow it (18.2) |

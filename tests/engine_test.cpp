@@ -144,6 +144,32 @@ TEST_CASE("adding the first output reopens a preview-only NDI source") {
   engine.stop();
 }
 
+TEST_CASE("adding the first output reopens a preview-only OMT-HX source") {
+  ob::Engine engine(0, "token", {}, false);
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::OmtHx, .address = "PC (Cam)"});
+  engine.apply(b);
+  engine.start();
+
+  engine.graph().setThumbnailsWanted(true);
+  REQUIRE(engine.graph().hub("s1") != nullptr);
+  CHECK(engine.graph().hub("s1")->running());
+  CHECK(engine.adapterStarts() == 1u);
+
+  b.outputs.push_back(
+      ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::OmtHx, .name = "A"});
+  engine.apply(b);
+  CHECK(engine.adapterStarts() == 2u);  // reopened at full size for the output
+
+  b.outputs.clear();
+  engine.apply(b);
+  CHECK(engine.adapterStarts() == 3u);  // back to the small preview stream
+
+  engine.graph().setThumbnailsWanted(false);
+  CHECK_FALSE(engine.graph().hub("s1")->running());
+  engine.stop();
+}
+
 #ifdef OB_WITH_NDI
 TEST_CASE("an NDI source starts a real adapter and reports Connecting") {
   ob::Engine engine(0, "token");  // adapters enabled: a real NdiSource

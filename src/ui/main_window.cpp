@@ -487,9 +487,9 @@ void MainWindow::rebuildSources() {
         hasOutput = true;
         break;
       }
-    if (s.value("kind").toString() == QStringLiteral("NDI") && !hasOutput)
+    if (!hasOutput)
       formatItem->setToolTip(QStringLiteral(
-          "NDI low-bandwidth preview; an output opens the full-resolution stream."));
+          "Low-bandwidth preview; an output opens the full-resolution stream."));
     sources_->setItem(r, 3, formatItem);
     sources_->setItem(
         r, 4, new QTableWidgetItem(s.value("codec").toString(QStringLiteral("—"))));

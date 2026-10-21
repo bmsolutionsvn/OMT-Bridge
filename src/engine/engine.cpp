@@ -115,9 +115,9 @@ void Engine::applyLocked(const Bridge& bridge) {
   }
   restartChanged();
 
-  // An NDI source stays running for its thumbnail with no outputs; NDI's preview mode is low
-  // bandwidth. Reopen it when demand crosses zero either way: full resolution for an output,
-  // the preview stream for a thumbnail alone (design 11).
+  // A source that stays running for its thumbnail uses the transport's small stream. Reopen it
+  // when demand crosses zero either way: full size for an output, preview for a thumbnail alone
+  // (design 11).
   for (const Source& s : model_.sources) {
     if (std::find(changed.begin(), changed.end(), s.id) != changed.end()) continue;
     SourceHub* h = graph_.hub(s.id);
@@ -150,6 +150,9 @@ void Engine::startAdapter(const std::string& id) {
   const Source* s = model_.findSource(id);
   if (s == nullptr) return;  // removed while stopping
   adapterStarts_.fetch_add(1);  // every start decision
+  // No output reads this source; the UI preview does. Ask the transport for its small stream.
+  SourceHub* hub = graph_.hub(id);
+  const bool previewOnly = hub != nullptr && hub->refs() == 0;
   if (!adaptersEnabled_) {
     std::lock_guard l(runtimeMu_);
     sourceRuntime_[id].state = SignalState::Offline;
@@ -157,8 +160,6 @@ void Engine::startAdapter(const std::string& id) {
   }
   if (s->kind == SourceKind::Ndi) {
 #ifdef OB_WITH_NDI
-    SourceHub* hub = graph_.hub(id);
-    const bool previewOnly = hub != nullptr && hub->refs() == 0;
     auto src = std::make_unique<NdiSource>(
         s->address,
         [this, id](std::shared_ptr<Frame> f) { graph_.publish(id, std::move(f)); },
@@ -195,7 +196,8 @@ void Engine::startAdapter(const std::string& id) {
         else if (st == SignalState::Live)
           rt.error.clear();
       },
-      [this, id](std::shared_ptr<AudioFrame> a) { graph_.publishAudio(id, std::move(a)); });
+      [this, id](std::shared_ptr<AudioFrame> a) { graph_.publishAudio(id, std::move(a)); },
+      previewOnly);
   adapters_[id] = std::move(src);
   adapters_[id]->start();
 }
@@ -402,9 +404,9 @@ void Engine::onControlClientConnected() {
 
 void Engine::maybeSendThumbnails() {
   if (!server_ || uiClients_ <= 0) return;
-  // The hub's decoded frame is the picture. omthx exposes no preview pixel format: OMT's preview
-  // flag is internal to probe() and an HX source is one HEVC stream. NDI sources with no outputs
-  // already arrive from NdiSource's low-bandwidth receiver. The interval limits downscale + send.
+  // The hub's decoded frame is the picture. A source with no outputs is opened in preview mode
+  // (OmtSource, NdiSource), so this usually downscales a 640-wide picture. The interval limits
+  // downscale + send.
   const int intervalMs = router_.bridge().settings.thumbnailIntervalMs;
   if (intervalMs <= 0) return;
   const auto now = std::chrono::steady_clock::now();

@@ -8,8 +8,8 @@
 namespace ob {
 
 struct OmtReceiverHolder {
-  explicit OmtReceiverHolder(const std::string& address)
-      : receiver(address, omthx::PixelFormat::Uyvy) {}
+  OmtReceiverHolder(const std::string& address, bool preview)
+      : receiver(address, omthx::PixelFormat::Uyvy, preview) {}
   omthx::Receiver receiver;
 };
 
@@ -18,8 +18,10 @@ constexpr int kReceiveTimeoutMs = 100;
 constexpr auto kOfflineAfter = std::chrono::seconds(2);
 }
 
-OmtSource::OmtSource(std::string address, FrameSink onFrame, StateSink onState, AudioSink onAudio)
+OmtSource::OmtSource(std::string address, FrameSink onFrame, StateSink onState, AudioSink onAudio,
+                     bool preview)
     : address_(std::move(address)),
+      preview_(preview),
       onFrame_(std::move(onFrame)),
       onState_(std::move(onState)),
       onAudio_(std::move(onAudio)) {}
@@ -44,7 +46,7 @@ void OmtSource::start() {
   }
   std::unique_ptr<OmtReceiverHolder> rx;
   try {
-    rx = std::make_unique<OmtReceiverHolder>(address_);
+    rx = std::make_unique<OmtReceiverHolder>(address_, preview_);
   } catch (const std::exception& e) {
     // Never let an open failure escape into the graph's demand path.
     if (onState_) onState_(SignalState::Offline, ErrorInfo{"omt-open", e.what()});

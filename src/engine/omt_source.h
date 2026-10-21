@@ -27,7 +27,8 @@ class OmtSource {
   // not re-enter OmtSource, and must synchronise its own storage.
   using StateSink = std::function<void(SignalState, std::optional<ErrorInfo>)>;
 
-  OmtSource(std::string address, FrameSink onFrame, StateSink onState, AudioSink onAudio);
+  OmtSource(std::string address, FrameSink onFrame, StateSink onState, AudioSink onAudio,
+            bool preview = false);
   ~OmtSource();
   OmtSource(const OmtSource&) = delete;
   OmtSource& operator=(const OmtSource&) = delete;
@@ -44,6 +45,9 @@ class OmtSource {
   void audioLoop(OmtReceiverHolder& rx);
 
   std::string address_;
+  // A small picture for a source with no outputs (design 11): OMT's VMX preview, or OMT-HX's
+  // second ~640-wide stream. The engine reopens the receiver at full size when an output attaches.
+  bool preview_ = false;
   FrameSink onFrame_;
   StateSink onState_;
   AudioSink onAudio_;
