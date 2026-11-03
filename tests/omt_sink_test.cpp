@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <span>
@@ -258,6 +259,46 @@ TEST_CASE("a new output asks for a keyframe once") {
   CHECK_FALSE(sink.takeKeyframeRequest());
 }
 
+TEST_CASE("an NV12 frame goes full-range to an OMT-HX output and limited to plain OMT") {
+  struct Nv12Sink : ob::OmtSink {
+    struct Sent { int w, h; bool fullRange; const uint8_t* y; const uint8_t* uv; int64_t ts; };
+    std::vector<Sent> nv12;
+    int uyvySent = 0;
+   protected:
+    void openLocked() override {}
+    void send(const ob::VideoFormat&, const uint8_t*, bool, bool, int64_t) override { ++uyvySent; }
+    void sendNv12(const ob::VideoFormat& f, const uint8_t* y, const uint8_t* uv, bool fullRange,
+                  int64_t ts) override {
+      nv12.push_back({f.width, f.height, fullRange, y, uv, ts});
+    }
+  };
+
+  auto frame = std::make_shared<ob::Frame>();
+  frame->layout = ob::Layout::Nv12;
+  frame->format = ob::VideoFormat{4, 2, 60, 1, false};
+  frame->nv12.assign(4u * 2u * 3u / 2u, 0x80);
+  frame->timestamp = 7;
+
+  Nv12Sink hx;
+  hx.configure(output(ob::OutputTarget::OmtHx, ob::HxCodec::Hevc, ob::AlphaMode::Auto), "B (A)");
+  hx.deliver(frame);
+  REQUIRE(hx.nv12.size() == 1u);
+  CHECK(hx.nv12[0].fullRange);
+  CHECK(hx.nv12[0].y == frame->nv12.data());          // the frame's own planes, no conversion
+  CHECK(hx.nv12[0].uv == frame->nv12.data() + 8u);
+  CHECK(hx.nv12[0].ts == 7);
+  CHECK(hx.uyvySent == 0);
+
+  Nv12Sink omt;
+  omt.configure(output(ob::OutputTarget::Omt, ob::HxCodec::Hevc, ob::AlphaMode::Auto), "B (A)");
+  omt.deliver(frame);
+  REQUIRE(omt.nv12.size() == 1u);
+  CHECK_FALSE(omt.nv12[0].fullRange);
+  CHECK(omt.nv12[0].y == frame->limitedNv12()->data());
+  CHECK(omt.nv12[0].uv == frame->limitedNv12()->data() + 8u);
+  CHECK(omt.uyvySent == 0);
+}
+
 namespace {
 bool waitFor(const std::function<bool()>& done, std::chrono::milliseconds limit) {
   const auto deadline = std::chrono::steady_clock::now() + limit;
@@ -353,4 +394,83 @@ TEST_CASE("an output that changes lane reopens its sender and asks for a keyfram
   CHECK(sink.sent.size() == 1u);
   CHECK(sink.opens == opens + 1);
   CHECK(sink.takeKeyframeRequest());
+}
+
+TEST_CASE("levels survive an HX source through a plain OMT output") {
+  const omthx::VideoFormat f{640, 360, 60, 1, false};
+  omthx::Sender source("ob-test-levels-in", omthx::Mode::Hx, omthx::Quality::Medium,
+                       omthx::Codec::Hevc);
+
+  struct ProbeSink : ob::OmtSink {  // the real sink, with its sender's address for the receiver
+    std::string address() const { return senderAddress(); }
+  };
+  ProbeSink out;
+  out.configure(output(ob::OutputTarget::Omt, ob::HxCodec::Hevc, ob::AlphaMode::Auto),
+                "ob-test-levels-out");
+  const std::string address = out.address();
+
+  ob::OmtSource in(
+      source.address(),
+      [&](std::shared_ptr<ob::Frame> fr) {
+        out.deliver(fr);
+        return out.takeKeyframeRequest();
+      },
+      [](ob::SignalState, std::optional<ob::ErrorInfo>) {},
+      [](std::shared_ptr<ob::AudioFrame>) {},
+      [](bool, bool) { return true; });  // the picture lane: decode the HX stream
+  in.start();
+
+  if (address.empty()) {
+    MESSAGE("SKIPPED, the output's sender did not open");
+    in.stop();
+    return;
+  }
+  omthx::Receiver reader(address, omthx::PixelFormat::Uyvy);
+
+  std::atomic<bool> stop{false};
+  std::atomic<bool> failed{false};
+  std::thread pump([&] {
+    std::vector<uint8_t> uyvy(static_cast<size_t>(f.width) * f.height * 2);
+    auto next = std::chrono::steady_clock::now();
+    for (int i = 0; !stop.load(); ++i) {
+      const uint8_t y = i < 60 ? 16 : 126;  // a second of limited-range black, then mid grey
+      for (size_t p = 0; p < uyvy.size(); p += 4) {
+        uyvy[p] = 128;
+        uyvy[p + 1] = y;
+        uyvy[p + 2] = 128;
+        uyvy[p + 3] = y;
+      }
+      try {
+        source.sendVideoUyvy(f, uyvy.data(), f.width * 2, nullptr, f.width, false,
+                             1'000'000 + static_cast<int64_t>(i) * 166'667);
+      } catch (const std::exception&) {
+        failed.store(true);
+        return;
+      }
+      next += std::chrono::milliseconds(16);
+      std::this_thread::sleep_until(next);
+    }
+  });
+
+  const bool encoding = waitFor([&] { return !source.stats().encoder.empty(); }, 3s);
+  int black = 0, grey = 0, pictures = 0;
+  for (const auto deadline = std::chrono::steady_clock::now() + 8s;
+       (black == 0 || grey == 0) && std::chrono::steady_clock::now() < deadline && !failed.load();) {
+    omthx::VideoFrame v;
+    if (!reader.receiveVideo(v, 100)) continue;
+    ++pictures;
+    const int y = v.uyvy[(180u * 640 + 320) * 2 + 1];
+    if (std::abs(y - 16) <= 2) ++black;
+    if (std::abs(y - 126) <= 2) ++grey;
+  }
+  stop.store(true);
+  pump.join();
+  in.stop();
+  if (failed.load() || !encoding) {
+    MESSAGE("SKIPPED, no hardware HEVC encoder on this PC");
+    return;
+  }
+  MESSAGE("read " << pictures << " pictures, " << black << " black, " << grey << " mid grey");
+  CHECK(black > 0);
+  CHECK(grey > 0);
 }

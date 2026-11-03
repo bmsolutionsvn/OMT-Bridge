@@ -130,6 +130,18 @@ TEST_CASE("the hub drops an opaque alpha plane after two seconds and keeps the f
   CHECK(hub.latest()->uyvy.size() == hub.latest()->lumaBytes());
 }
 
+TEST_CASE("the hub does not scan an NV12 frame for alpha") {
+  ob::SourceHub hub("s1");
+  auto f = std::make_shared<ob::Frame>();
+  f->layout = ob::Layout::Nv12;
+  f->format = ob::VideoFormat{4, 2, 60, 1, true};  // a mislabelled source: NV12 has no alpha plane
+  f->nv12.assign(4u * 2u * 3u / 2u, 0x80);
+  hub.storeFrame(f);
+  REQUIRE(hub.latest().get() != nullptr);
+  CHECK(hub.latest()->layout == ob::Layout::Nv12);
+  CHECK(hub.latest()->format.alpha);  // untouched, and no read of an absent UYVY plane
+}
+
 TEST_CASE("the hub keeps only the newest audio packet") {
   ob::SourceHub hub("s1");
   for (int64_t i = 1; i <= 2; ++i) {

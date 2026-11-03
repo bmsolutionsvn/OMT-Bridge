@@ -143,6 +143,88 @@ TEST_CASE("an HX OmtSource decodes from a keyframe once a picture is wanted") {
   CHECK(sender.stats().keyframes > before);  // the decoder restarted at a keyframe
 }
 
+TEST_CASE("an HX OmtSource publishes NV12 pictures") {
+  const omthx::VideoFormat f{640, 360, 60, 1, false};
+  omthx::Sender sender("ob-test-source-nv12", omthx::Mode::Hx, omthx::Quality::Medium,
+                       omthx::Codec::Hevc);
+  std::atomic<int> nv12{0}, others{0}, invalid{0};
+  ob::OmtSource source(
+      sender.address(),
+      [&](std::shared_ptr<ob::Frame> fr) {
+        if (!fr->codedOnly()) {
+          if (!fr->valid()) ++invalid;
+          else if (fr->layout == ob::Layout::Nv12) ++nv12;
+          else ++others;
+        }
+        return false;
+      },
+      [](ob::SignalState, std::optional<ob::ErrorInfo>) {},
+      [](std::shared_ptr<ob::AudioFrame>) {},
+      [](bool, bool) { return true; });
+  source.start();
+  Pump pump(sender, f);
+  const bool encoding = waitFor([&] { return !sender.stats().encoder.empty(); }, 3s);
+  const bool pictures = waitFor([&] { return nv12.load() >= 10; }, 5s);
+  source.stop();
+  if (pump.failed() || !encoding) {
+    MESSAGE("SKIPPED, no hardware HEVC encoder on this PC");
+    return;
+  }
+  CHECK(pictures);
+  CHECK(invalid.load() == 0);
+  CHECK(others.load() == 0);  // the picture lane never unpacks to UYVY
+  CHECK(source.framesDecoded() > 0);
+}
+
+TEST_CASE("an HX source that turns alpha on switches to Uyvy at a keyframe") {
+  const omthx::VideoFormat plain{640, 360, 60, 1, false};
+  const omthx::VideoFormat keyed{640, 360, 60, 1, true};
+  omthx::Sender sender("ob-test-source-alpha-switch", omthx::Mode::Hx, omthx::Quality::Medium,
+                       omthx::Codec::Hevc);
+  std::atomic<int> nv12{0}, uyvy{0}, invalid{0};
+  std::atomic<bool> sawAlpha{false};
+  ob::OmtSource source(
+      sender.address(),
+      [&](std::shared_ptr<ob::Frame> fr) {
+        if (!fr->codedOnly()) {
+          if (!fr->valid()) {
+            ++invalid;
+          } else if (fr->layout == ob::Layout::Nv12) {
+            ++nv12;
+          } else {
+            ++uyvy;
+            if (fr->format.alpha) sawAlpha.store(true);
+          }
+        }
+        return false;
+      },
+      [](ob::SignalState, std::optional<ob::ErrorInfo>) {},
+      [](std::shared_ptr<ob::AudioFrame>) {},
+      [](bool, bool) { return true; });
+  source.start();
+  bool skipped = false;
+  {
+    Pump pump(sender, plain);
+    const bool encoding = waitFor([&] { return !sender.stats().encoder.empty(); }, 3s);
+    const bool got = waitFor([&] { return nv12.load() >= 10; }, 5s);
+    skipped = pump.failed() || !encoding || !got;
+  }
+  if (!skipped) {
+    Pump pump(sender, keyed);
+    const bool switched = waitFor([&] { return sawAlpha.load() && uyvy.load() >= 10; }, 5s);
+    skipped = pump.failed() || !switched;
+  }
+  source.stop();
+  if (skipped) {
+    MESSAGE("SKIPPED, no hardware HEVC encoder on this PC");
+    return;
+  }
+  CHECK(invalid.load() == 0);  // no picture with the wrong layout while the switch happens
+  CHECK(nv12.load() >= 10);
+  CHECK(uyvy.load() >= 10);
+  CHECK(sawAlpha.load());
+}
+
 TEST_CASE("a keyframe request from downstream reaches the source") {
   const omthx::VideoFormat f{640, 360, 60, 1, false};
   omthx::Sender sender("ob-test-source-keyframe", omthx::Mode::Hx, omthx::Quality::Medium,

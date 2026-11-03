@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 namespace ob {
 namespace {
@@ -19,6 +20,15 @@ uint8_t clamp255(double v) {
 Thumbnail makeThumbnail(const Frame& frame, int targetWidth) {
   Thumbnail out;
   if (targetWidth < 2 || !frame.valid()) return out;
+  // An NV12 frame is read through its one limited-range conversion, so the maths below stays the same.
+  std::shared_ptr<const std::vector<uint8_t>> limited;
+  const uint8_t* nv12 = nullptr;
+  if (frame.layout == Layout::Nv12) {
+    limited = frame.limitedNv12();
+    if (!limited) return out;
+    nv12 = limited->data();
+  }
+  const size_t nv12Y = static_cast<size_t>(frame.format.width) * static_cast<size_t>(frame.format.height);
 
   const int sw = frame.format.width;
   const int sh = frame.format.height;
@@ -44,6 +54,17 @@ Thumbnail makeThumbnail(const Frame& frame, int targetWidth) {
       uint64_t sumY = 0, sumU = 0, sumV = 0;
       uint64_t n = 0;
       for (int sy = y0; sy < y1; ++sy) {
+        if (nv12) {
+          const uint8_t* row = nv12 + static_cast<size_t>(sy) * static_cast<size_t>(sw);
+          const uint8_t* uvRow = nv12 + nv12Y + static_cast<size_t>(sy / 2) * static_cast<size_t>(sw);
+          for (int sx = x0; sx < x1; ++sx) {
+            sumY += row[sx];
+            sumU += uvRow[sx & ~1];
+            sumV += uvRow[(sx & ~1) + 1];
+            ++n;
+          }
+          continue;
+        }
         const uint8_t* row = frame.uyvy.data() + static_cast<size_t>(sy) * stride;
         for (int sx = x0; sx < x1; ++sx) {
           const int pair = sx & ~1;

@@ -6,17 +6,20 @@
 #include <vector>
 
 #include "engine/ndi_sink.h"
+#include "engine/omt_sink.h"
 
 namespace {
 class TestNdiSink : public ob::NdiSink {
  public:
   struct Sent { int w, h; bool alpha, premultiplied; uint8_t y0; };
   std::vector<Sent> sent;
+  const uint8_t* nv12 = nullptr;
  protected:
   void openLocked() override {}  // no network sender in a unit test
   void send(const ob::Frame& f, bool alpha) override {
     sent.push_back({f.format.width, f.format.height, alpha, f.premultiplied, f.uyvy[1]});
   }
+  void sendNv12(const ob::VideoFormat&, const uint8_t* data, int64_t) override { nv12 = data; }
 };
 }
 
@@ -71,5 +74,38 @@ TEST_CASE("a malformed frame is never sent") {
   f->uyvy.assign(7, 0);  // too short to be valid
   sink.deliver(f);
   CHECK(sink.sent.empty());
+}
+
+TEST_CASE("one NV12 frame's limited conversion is shared by an OMT and an NDI sink") {
+  struct OmtNv12Sink : ob::OmtSink {
+    const uint8_t* y = nullptr;
+   protected:
+    void openLocked() override {}
+    void sendNv12(const ob::VideoFormat&, const uint8_t* yp, const uint8_t*, bool, int64_t) override {
+      y = yp;
+    }
+  };
+
+  auto f = std::make_shared<ob::Frame>();
+  f->layout = ob::Layout::Nv12;
+  f->format = ob::VideoFormat{4, 2, 60, 1, false};
+  f->nv12.assign(4u * 2u * 3u / 2u, 0x80);
+
+  OmtNv12Sink omt;
+  ob::Output o;
+  o.id = "o1";
+  o.target = ob::OutputTarget::Omt;
+  o.alpha = ob::AlphaMode::Auto;
+  omt.configure(o, "Bridge (A)");
+  omt.deliver(f);
+
+  TestNdiSink ndi;
+  ndi.configure(ndiOutput(ob::AlphaMode::Auto), "Bridge (A)");
+  ndi.deliver(f);
+
+  REQUIRE(omt.y != nullptr);
+  REQUIRE(ndi.nv12 != nullptr);
+  CHECK(omt.y == ndi.nv12);                 // one conversion, two sinks
+  CHECK(omt.y == f->limitedNv12()->data());
 }
 #endif

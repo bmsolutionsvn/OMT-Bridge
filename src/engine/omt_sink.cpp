@@ -79,6 +79,19 @@ void OmtSink::deliver(const std::shared_ptr<const Frame>& frame) {
   if (!frame->valid()) return;  // no picture to re-encode: a coded-only frame for another family
   useLane(false);
 
+  if (frame->layout == Layout::Nv12) {
+    const size_t yBytes = static_cast<size_t>(frame->format.width) *
+                          static_cast<size_t>(frame->format.height);
+    if (config_.target == OutputTarget::OmtHx) {
+      sendNv12(frame->format, frame->nv12.data(), frame->nv12.data() + yBytes, true, frame->timestamp);
+      return;
+    }
+    const auto limited = frame->limitedNv12();  // plain OMT takes limited range only
+    if (!limited) return;
+    sendNv12(frame->format, limited->data(), limited->data() + yBytes, false, frame->timestamp);
+    return;
+  }
+
   const bool hadAlpha = frame->format.alpha;
   bool alpha = hadAlpha && config_.alpha != AlphaMode::Off;
   if (hadAlpha && config_.alpha == AlphaMode::Off) {
@@ -116,6 +129,13 @@ void OmtSink::send(const VideoFormat& format, const uint8_t* uyvy, bool alpha, b
   const int alphaStride = static_cast<int>(format.width);
   sender_->sender->sendVideoUyvy(vf, uyvy, format.width * 2, plane, alphaStride, premultiplied,
                                  timestamp);
+}
+
+void OmtSink::sendNv12(const VideoFormat& format, const uint8_t* y, const uint8_t* uv, bool fullRange,
+                       int64_t timestamp) {
+  if (!sender_ || !sender_->sender) return;
+  omthx::VideoFormat vf{format.width, format.height, format.fpsN, format.fpsD, false};
+  sender_->sender->sendVideoNv12(vf, y, format.width, uv, format.width, fullRange, timestamp);
 }
 
 void OmtSink::useLane(bool coded) {

@@ -53,6 +53,7 @@ add_library(ob_core STATIC
   src/core/bridge_store.cpp
   src/core/alpha_gate.cpp
   src/core/alpha_convert.cpp
+  src/core/nv12.cpp
   src/core/thumbnail.cpp
 )
 target_include_directories(ob_core PUBLIC src)
@@ -95,6 +96,7 @@ target_link_libraries(ob_shell PUBLIC ob_core)
 add_executable(ob_tests
   tests/main.cpp
   tests/audio_test.cpp
+  tests/nv12_test.cpp
   tests/frame_test.cpp
   tests/signal_state_test.cpp
   tests/bounded_queue_test.cpp
