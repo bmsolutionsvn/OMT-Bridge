@@ -79,8 +79,8 @@ void SourceHub::setOnRunningChanged(RunningChanged cb) {
 
 void SourceHub::storeFrame(std::shared_ptr<Frame> frame) {
   // A coded-only frame carries no picture: the opaque-alpha gate has nothing to scan, and its state
-  // stays as it is until a picture comes back.
-  if (frame && !frame->codedOnly()) {
+  // stays as it is until a picture comes back. NV12 has no alpha plane: nothing to scan either.
+  if (frame && !frame->codedOnly() && frame->layout == Layout::Uyvy) {
     if (frame->format.alpha) {
       // One scan per source frame, shared by every output (design 6.4).
       const size_t offset = frame->alphaOffset();

@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 
+#include <cstdlib>
+
 #include "core/thumbnail.h"
 
 namespace {
@@ -58,6 +60,21 @@ TEST_CASE("a portrait source keeps its long edge at the target") {
   const auto t = ob::makeThumbnail(frameOf(4, 8, 235, 128, 128), 4);
   CHECK(t.width == 2);
   CHECK(t.height == 4);
+}
+
+TEST_CASE("an NV12 frame's thumbnail matches the same grey as limited UYVY") {
+  // Full-range mid grey (128) becomes limited 126; the UYVY picture carries that same grey.
+  ob::Frame nv12;
+  nv12.layout = ob::Layout::Nv12;
+  nv12.format = ob::VideoFormat{4, 2, 60, 1, false};
+  nv12.nv12.assign(4u * 2u * 3u / 2u, 128);
+  const auto fromNv12 = ob::makeThumbnail(nv12, 4);
+  const auto fromUyvy = ob::makeThumbnail(frameOf(4, 2, 126, 128, 128), 4);
+  REQUIRE(fromNv12.bgra.size() == fromUyvy.bgra.size());
+  REQUIRE(fromNv12.bgra.size() == 4u * 2u * 4u);
+  for (size_t i = 0; i < fromNv12.bgra.size(); ++i) {
+    CHECK(std::abs(static_cast<int>(fromNv12.bgra[i]) - static_cast<int>(fromUyvy.bgra[i])) <= 2);
+  }
 }
 
 TEST_CASE("an invalid frame produces an empty thumbnail") {
