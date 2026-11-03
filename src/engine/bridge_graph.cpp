@@ -158,17 +158,29 @@ void BridgeGraph::stop() {
   }
 }
 
-void BridgeGraph::publish(const std::string& sourceId, std::shared_ptr<Frame> frame) {
+bool BridgeGraph::publish(const std::string& sourceId, std::shared_ptr<Frame> frame) {
   std::lock_guard l(mu_);
   SourceHub* h = hubUnlocked(sourceId);
-  if (h == nullptr) return;
+  if (h == nullptr) return false;
   h->storeFrame(frame);
+  bool keyframe = false;
   for (auto& [id, r] : rows_) {
     if (r.row->sourceId() == sourceId) {
       r.row->offer(frame);
       ++r.offered;
+      if (r.row->takeKeyframeRequest()) keyframe = true;
     }
   }
+  return keyframe;
+}
+
+bool BridgeGraph::pictureWanted(const std::string& sourceId, OutputTarget family, bool alpha) const {
+  std::lock_guard l(mu_);
+  if (thumbnailsWanted_ && started_) return true;
+  for (const auto& [id, r] : rows_) {
+    if (r.row->sourceId() == sourceId && !passesThrough(r.row->config(), family, alpha)) return true;
+  }
+  return false;
 }
 
 void BridgeGraph::publishAudio(const std::string& sourceId, std::shared_ptr<AudioFrame> frame) {

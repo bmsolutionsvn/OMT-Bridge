@@ -50,11 +50,17 @@ class BridgeGraph {
   // it (design 6.4, 11). Serialised by the caller like apply()/start()/stop().
   void setThumbnailsWanted(bool wanted);
 
-  // Hands a frame to every row whose output reads this source.
-  void publish(const std::string& sourceId, std::shared_ptr<Frame> frame);
+  // Hands a frame to every row whose output reads this source. True when a row reading this source
+  // took a keyframe request from its receiver during this call, for the adapter to forward.
+  bool publish(const std::string& sourceId, std::shared_ptr<Frame> frame);
   // The audio twin: stores the packet in the hub's audio slot and offers it to every row of the
   // source. Never touches the video offer counter — audio and video are counted separately.
   void publishAudio(const std::string& sourceId, std::shared_ptr<AudioFrame> frame);
+
+  // True while something needs a picture of this source: thumbnails on a started graph, or any row
+  // that reads it and does not pass the source's coded frames through. `family` and `alpha` are the
+  // source's, per frame (a source can switch modes). Locks mu_.
+  bool pictureWanted(const std::string& sourceId, OutputTarget family, bool alpha) const;
 
   // Locks; for callers outside the graph.
   // READ-ONLY uses (latest(), running(), framesPublished()) are fine from any thread. Demand

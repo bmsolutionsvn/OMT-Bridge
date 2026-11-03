@@ -78,20 +78,24 @@ void SourceHub::setOnRunningChanged(RunningChanged cb) {
 }
 
 void SourceHub::storeFrame(std::shared_ptr<Frame> frame) {
-  if (frame && frame->format.alpha) {
-    // One scan per source frame, shared by every output (design 6.4).
-    const size_t offset = frame->alphaOffset();
-    const size_t bytes = frame->alphaBytes();
-    const uint8_t* plane = frame->uyvy.data() + offset;
-    if (alpha_.shouldDrop(true, plane, bytes, clock_())) {
-      // Drop the plane without copying: shrinking a vector does not move the picture, and
-      // Frame::valid() requires uyvy.size() == lumaBytes() + alphaBytes() for the new format.
-      frame->format.alpha = false;
-      frame->premultiplied = false;  // nothing to premultiply once alpha is gone
-      frame->uyvy.resize(frame->lumaBytes());
+  // A coded-only frame carries no picture: the opaque-alpha gate has nothing to scan, and its state
+  // stays as it is until a picture comes back.
+  if (frame && !frame->codedOnly()) {
+    if (frame->format.alpha) {
+      // One scan per source frame, shared by every output (design 6.4).
+      const size_t offset = frame->alphaOffset();
+      const size_t bytes = frame->alphaBytes();
+      const uint8_t* plane = frame->uyvy.data() + offset;
+      if (alpha_.shouldDrop(true, plane, bytes, clock_())) {
+        // Drop the plane without copying: shrinking a vector does not move the picture, and
+        // Frame::valid() requires uyvy.size() == lumaBytes() + alphaBytes() for the new format.
+        frame->format.alpha = false;
+        frame->premultiplied = false;  // nothing to premultiply once alpha is gone
+        frame->uyvy.resize(frame->lumaBytes());
+      }
+    } else {
+      alpha_.reset();
     }
-  } else {
-    alpha_.reset();
   }
 
   // Consumers only ever see shared_ptr<const Frame>; the hub mutated the object above, before storing it.

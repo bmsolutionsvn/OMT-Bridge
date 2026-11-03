@@ -42,6 +42,8 @@ void OutputRow::stop() {
 
 void OutputRow::offer(std::shared_ptr<const Frame> frame) { queue_.push(std::move(frame)); }
 
+bool OutputRow::takeKeyframeRequest() { return sink_ && sink_->takeKeyframeRequest(); }
+
 void OutputRow::offerAudio(std::shared_ptr<const AudioFrame> frame) {
   audioQueue_.push(std::move(frame));
 }

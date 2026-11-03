@@ -91,4 +91,9 @@ std::string Bridge::advertisedName(const Output& o) const {
   return name + " (" + o.name + ")";
 }
 
+bool passesThrough(const Output& o, OutputTarget sourceFamily, bool sourceAlpha) {
+  return o.target == sourceFamily && sourceFamily != OutputTarget::Ndi &&
+         !(sourceAlpha && o.alpha == AlphaMode::Off);
+}
+
 }  // namespace ob

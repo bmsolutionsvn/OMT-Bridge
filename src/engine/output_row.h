@@ -54,6 +54,9 @@ class Sink {
   // Called with the stats poll, never per frame. Must lock its own state: the graph mutex does not
   // protect a sink, and a poll can race configure()/deliver().
   virtual SinkStats stats() const { return {}; }
+  // A pass-through sink sets this when a receiver asked for a keyframe, or joined. Any thread; true
+  // once per request. A sink that decodes-and-encodes never has one to make.
+  virtual bool takeKeyframeRequest() { return false; }
 };
 // May return nullptr; a row with no sink is legal.
 using SinkFactory = std::function<std::unique_ptr<Sink>(const Output&, const std::string&)>;
@@ -89,6 +92,9 @@ class OutputRow {
   // The output's downstream tally, read from its sink (design 12.3).
   Tally tally() const { return sink_ ? sink_->tally() : Tally{}; }
   SinkStats sinkStats() const { return sink_ ? sink_->stats() : SinkStats{}; }
+  // True once when this output's sink needs a keyframe from the source (a pass-through receiver
+  // joined or lost a frame). Called by the graph while publishing.
+  bool takeKeyframeRequest();
 
   uint64_t delivered() const { return delivered_.load(); }  // atomic: incremented on the worker thread
   // Audio packets handed to the sink, cumulative like delivered(). A throwing audio sink does not
