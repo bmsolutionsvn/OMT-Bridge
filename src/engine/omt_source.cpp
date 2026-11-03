@@ -9,7 +9,7 @@ namespace ob {
 
 struct OmtReceiverHolder {
   OmtReceiverHolder(const std::string& address, bool preview)
-      : receiver(address, omthx::PixelFormat::Uyvy, preview) {}
+      : receiver(address, preview ? omthx::PixelFormat::Uyvy : omthx::PixelFormat::Coded, preview) {}
   omthx::Receiver receiver;
 };
 
@@ -19,12 +19,13 @@ constexpr auto kOfflineAfter = std::chrono::seconds(2);
 }
 
 OmtSource::OmtSource(std::string address, FrameSink onFrame, StateSink onState, AudioSink onAudio,
-                     bool preview)
+                     PictureWanted pictureWanted, bool preview)
     : address_(std::move(address)),
       preview_(preview),
       onFrame_(std::move(onFrame)),
       onState_(std::move(onState)),
-      onAudio_(std::move(onAudio)) {}
+      onAudio_(std::move(onAudio)),
+      pictureWanted_(std::move(pictureWanted)) {}
 
 OmtSource::~OmtSource() { stopImpl(false); }  // no state callback from a destructor
 
@@ -107,16 +108,34 @@ void OmtSource::stopImpl(bool notify) {
 
 void OmtSource::videoLoop(OmtReceiverHolder& rx) {
   try {
-    // Uyvy is the canonical frame: the UYVY plane followed by the alpha plane, exactly UYVA.
     bool live = false;
     auto last = std::chrono::steady_clock::now();
-    while (!stop_.load()) {
-      if (tallyDirty_.exchange(false)) {
-        const uint32_t t = tally_.load();
-        rx.receiver.setTally(omthx::Tally{(t & 2u) != 0, (t & 1u) != 0});
+    auto noteOffline = [&] {
+      if (live && std::chrono::steady_clock::now() - last > kOfflineAfter) {
+        live = false;  // was live, no video
+        if (onState_) onState_(SignalState::Offline, std::nullopt);
       }
-      omthx::VideoFrame vf;
-      if (rx.receiver.receiveVideo(vf, kReceiveTimeoutMs)) {
+    };
+    auto publish = [&](std::shared_ptr<Frame> f) {
+      last = std::chrono::steady_clock::now();  // liveness follows usable frames
+      if (!live) {
+        live = true;
+        if (onState_) onState_(SignalState::Live, std::nullopt);
+      }
+      if (onFrame_ && onFrame_(std::move(f))) rx.receiver.requestKeyframe();
+    };
+    if (preview_) {
+      // The preview stream hands back pictures already: Uyvy, the UYVY plane then the alpha plane.
+      while (!stop_.load()) {
+        if (tallyDirty_.exchange(false)) {
+          const uint32_t t = tally_.load();
+          rx.receiver.setTally(omthx::Tally{(t & 2u) != 0, (t & 1u) != 0});
+        }
+        omthx::VideoFrame vf;
+        if (!rx.receiver.receiveVideo(vf, kReceiveTimeoutMs)) {
+          noteOffline();
+          continue;
+        }
         auto f = std::make_shared<Frame>();
         f->format = VideoFormat{vf.format.width, vf.format.height, vf.format.fpsN,
                                 vf.format.fpsD, vf.format.alpha};
@@ -124,16 +143,55 @@ void OmtSource::videoLoop(OmtReceiverHolder& rx) {
         f->timestamp = vf.timestamp;
         f->uyvy = std::move(vf.uyvy);
         if (!f->valid()) continue;  // malformed peer: never publish a frame the hub rejects
-        last = std::chrono::steady_clock::now();  // liveness follows usable frames
-        if (!live) {
-          live = true;
-          if (onState_) onState_(SignalState::Live, std::nullopt);
-        }
-        if (onFrame_) onFrame_(std::move(f));
-      } else if (live && std::chrono::steady_clock::now() - last > kOfflineAfter) {
-        live = false;  // was live, no video
-        if (onState_) onState_(SignalState::Offline, std::nullopt);
+        publish(std::move(f));
       }
+      return;
+    }
+
+    // Coded: one frame as the source sent it, decoded only while some output or the thumbnail
+    // wants a picture (design 3.1, 3.2). A same-family output takes it on without a picture.
+    std::unique_ptr<omthx::FrameDecoder> decoder;
+    bool decoding = false;
+    omthx::CodedFrame coded;
+    while (!stop_.load()) {
+      if (tallyDirty_.exchange(false)) {
+        const uint32_t t = tally_.load();
+        rx.receiver.setTally(omthx::Tally{(t & 2u) != 0, (t & 1u) != 0});
+      }
+      if (!rx.receiver.receiveCoded(coded, kReceiveTimeoutMs)) {
+        noteOffline();
+        continue;
+      }
+      const bool want =
+          !pictureWanted_ || pictureWanted_(coded.mode == omthx::Mode::Hx, coded.format.alpha);
+      if (want && !decoding) {
+        // Turning the picture lane on: the decoder may hold a broken pipeline, so start it at a
+        // keyframe and ask the source for one (review focus 2).
+        if (!decoder) decoder = std::make_unique<omthx::FrameDecoder>(omthx::PixelFormat::Uyvy);
+        decoder->reset();
+        rx.receiver.requestKeyframe();
+      }
+      decoding = want;
+
+      auto f = std::make_shared<Frame>();
+      f->format = VideoFormat{coded.format.width, coded.format.height, coded.format.fpsN,
+                              coded.format.fpsD, coded.format.alpha};
+      f->premultiplied = coded.format.alpha;  // HX alpha is premultiplied; the picture corrects it
+      f->timestamp = coded.timestamp;
+      if (want) {
+        omthx::VideoFrame vf;
+        if (decoder->decode(coded, vf)) {
+          f->format = VideoFormat{vf.format.width, vf.format.height, vf.format.fpsN,
+                                  vf.format.fpsD, vf.format.alpha};
+          f->premultiplied = vf.premultiplied;
+          f->timestamp = vf.timestamp;  // an HX decoder hands pictures back late
+          f->uyvy = std::move(vf.uyvy);
+          framesDecoded_.fetch_add(1);
+        }
+      }
+      f->coded = std::make_shared<const omthx::CodedFrame>(std::move(coded));
+      if (!f->codedOnly() && !f->valid()) continue;  // a picture that does not match its header
+      publish(std::move(f));
     }
   } catch (const std::exception& e) {
     if (onState_) onState_(SignalState::Offline, ErrorInfo{"omt-receive", e.what()});
