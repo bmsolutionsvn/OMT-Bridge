@@ -1,6 +1,7 @@
 #include "engine/omt_source.h"
 
 #include <chrono>
+#include <cstring>
 #include <exception>
 
 #include <omthx/omthx.h>
@@ -151,6 +152,7 @@ void OmtSource::videoLoop(OmtReceiverHolder& rx) {
     // Coded: one frame as the source sent it, decoded only while some output or the thumbnail
     // wants a picture (design 3.1, 3.2). A same-family output takes it on without a picture.
     std::unique_ptr<omthx::FrameDecoder> decoder;
+    omthx::PixelFormat decoderPixels = omthx::PixelFormat::Uyvy;
     bool decoding = false;
     omthx::CodedFrame coded;
     while (!stop_.load()) {
@@ -164,12 +166,21 @@ void OmtSource::videoLoop(OmtReceiverHolder& rx) {
       }
       const bool want =
           !pictureWanted_ || pictureWanted_(coded.mode == omthx::Mode::Hx, coded.format.alpha);
-      if (want && !decoding) {
-        // Turning the picture lane on: the decoder may hold a broken pipeline, so start it at a
-        // keyframe and ask the source for one (review focus 2).
-        if (!decoder) decoder = std::make_unique<omthx::FrameDecoder>(omthx::PixelFormat::Uyvy);
-        decoder->reset();
-        rx.receiver.requestKeyframe();
+      // An HX source without alpha stays NV12, the decoder's native layout; anything else is UYVY.
+      const bool nv12 = coded.mode == omthx::Mode::Hx && !coded.format.alpha;
+      const omthx::PixelFormat pixels = nv12 ? omthx::PixelFormat::Nv12 : omthx::PixelFormat::Uyvy;
+      if (want) {
+        if (!decoder || decoderPixels != pixels) {
+          // A new picture layout: a new decoder, started at a keyframe the source is asked for.
+          decoder = std::make_unique<omthx::FrameDecoder>(pixels);
+          decoderPixels = pixels;
+          rx.receiver.requestKeyframe();
+        } else if (!decoding) {
+          // Turning the picture lane on: the decoder may hold a broken pipeline, so start it at a
+          // keyframe and ask the source for one (review focus 2).
+          decoder->reset();
+          rx.receiver.requestKeyframe();
+        }
       }
       decoding = want;
 
@@ -185,7 +196,18 @@ void OmtSource::videoLoop(OmtReceiverHolder& rx) {
                                   vf.format.fpsD, vf.format.alpha};
           f->premultiplied = vf.premultiplied;
           f->timestamp = vf.timestamp;  // an HX decoder hands pictures back late
-          f->uyvy = std::move(vf.uyvy);
+          if (nv12) {
+            // The decoder's planes are valid until its next decode: copy them once.
+            const size_t yBytes = static_cast<size_t>(f->format.width) *
+                                  static_cast<size_t>(f->format.height);
+            f->layout = Layout::Nv12;
+            f->nv12.resize(yBytes + yBytes / 2);
+            std::memcpy(f->nv12.data(), vf.nv12Y, yBytes);
+            std::memcpy(f->nv12.data() + yBytes, vf.nv12UV, yBytes / 2);
+          } else {
+            f->layout = Layout::Uyvy;
+            f->uyvy = std::move(vf.uyvy);
+          }
           framesDecoded_.fetch_add(1);
         }
       }
