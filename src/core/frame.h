@@ -4,7 +4,12 @@
 // The layout matches OMT's and NDI's UYVA exactly: the UYVY plane, then the alpha plane.
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
+
+namespace omthx {
+struct CodedFrame;  // OMT-HX's coded frame, kept opaque here so core/ stays free of the omthx headers
+}
 
 namespace ob {
 
@@ -22,6 +27,12 @@ struct Frame {
   bool premultiplied = false;  // colour already multiplied by alpha (design 9.1); false = straight
   int64_t timestamp = 0;      // OMT units: 10,000,000 per second
   std::vector<uint8_t> uyvy;  // luma plane, then the alpha plane when format.alpha
+  // The source's coded frame, when this one came in as coded data (design 3.1); null otherwise. A
+  // same-family output sends it on with Sender::sendCoded, with no picture in between.
+  std::shared_ptr<const omthx::CodedFrame> coded;
+
+  // A frame may travel coded-only, with no picture: picture consumers must ignore it, not index it.
+  bool codedOnly() const { return coded && uyvy.empty(); }
 
   static constexpr size_t kNoAlpha = static_cast<size_t>(-1);
 

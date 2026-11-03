@@ -483,3 +483,60 @@ TEST_CASE("tally is OR-ed across a source's outputs and clears when none is on a
   CHECK_FALSE(graph.hub("s1")->downstreamTally().program);
   graph.stop();
 }
+
+namespace {
+class KeyframeSink : public ob::Sink {
+ public:
+  void deliver(const std::shared_ptr<const ob::Frame>&) override {}
+  bool takeKeyframeRequest() override { return asked.exchange(false); }
+  std::atomic<bool> asked{false};
+};
+}  // namespace
+
+TEST_CASE("pictureWanted says whether any consumer needs a picture of this source") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::OmtHx, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::OmtHx, .name = "A"});
+
+  ob::BridgeGraph graph(nullSink);
+  graph.apply(b);
+  graph.start();
+
+  CHECK_FALSE(graph.pictureWanted("s1", ob::OutputTarget::OmtHx, false));
+  CHECK(graph.pictureWanted("s1", ob::OutputTarget::Omt, false));  // another family re-encodes: a picture
+
+  graph.setThumbnailsWanted(true);
+  CHECK(graph.pictureWanted("s1", ob::OutputTarget::OmtHx, false));
+  graph.setThumbnailsWanted(false);
+  CHECK_FALSE(graph.pictureWanted("s1", ob::OutputTarget::OmtHx, false));
+
+  b.outputs.push_back(ob::Output{.id = "o2", .sourceId = "s1", .target = ob::OutputTarget::Ndi, .name = "B"});
+  graph.apply(b);
+  CHECK(graph.pictureWanted("s1", ob::OutputTarget::OmtHx, false));
+  graph.stop();
+}
+
+TEST_CASE("publish reports a keyframe request taken from one of the source's rows") {
+  ob::Bridge b;
+  b.sources.push_back(ob::Source{.id = "s1", .kind = ob::SourceKind::OmtHx, .address = "PC"});
+  b.outputs.push_back(ob::Output{.id = "o1", .sourceId = "s1", .target = ob::OutputTarget::OmtHx, .name = "A"});
+
+  KeyframeSink* sink = nullptr;
+  ob::BridgeGraph graph([&](const ob::Output&, const std::string&) -> std::unique_ptr<ob::Sink> {
+    auto made = std::make_unique<KeyframeSink>();
+    sink = made.get();
+    return made;
+  });
+  graph.apply(b);
+  graph.start();
+  REQUIRE(sink != nullptr);
+
+  auto f = std::make_shared<ob::Frame>();
+  f->format = ob::VideoFormat{4, 2, 60, 1, false};
+  f->uyvy.assign(f->lumaBytes(), 0x10);
+  CHECK_FALSE(graph.publish("s1", f));
+  sink->asked = true;
+  CHECK(graph.publish("s1", f));  // true once
+  CHECK_FALSE(graph.publish("s1", f));
+  graph.stop();
+}

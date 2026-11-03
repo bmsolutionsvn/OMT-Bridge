@@ -109,3 +109,24 @@ TEST_CASE("equality ignores liveness, so a Live source still equals its saved fo
   b.address = "OTHER";
   CHECK_FALSE(a == b);
 }
+
+TEST_CASE("passesThrough: only a same-family output of a coded source passes through") {
+  ob::Output o;
+  o.target = ob::OutputTarget::Omt;
+  CHECK(ob::passesThrough(o, ob::OutputTarget::Omt, false));
+  o.target = ob::OutputTarget::OmtHx;
+  CHECK(ob::passesThrough(o, ob::OutputTarget::OmtHx, false));
+  CHECK_FALSE(ob::passesThrough(o, ob::OutputTarget::Omt, false));
+  o.target = ob::OutputTarget::Omt;
+  CHECK_FALSE(ob::passesThrough(o, ob::OutputTarget::OmtHx, false));
+  o.target = ob::OutputTarget::Ndi;
+  CHECK_FALSE(ob::passesThrough(o, ob::OutputTarget::Ndi, false));
+
+  // An output that drops alpha from a source that has it cannot take the coded frames.
+  o.target = ob::OutputTarget::OmtHx;
+  o.alpha = ob::AlphaMode::Off;
+  CHECK_FALSE(ob::passesThrough(o, ob::OutputTarget::OmtHx, true));
+  CHECK(ob::passesThrough(o, ob::OutputTarget::OmtHx, false));
+  o.alpha = ob::AlphaMode::Auto;
+  CHECK(ob::passesThrough(o, ob::OutputTarget::OmtHx, true));
+}

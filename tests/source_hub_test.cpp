@@ -8,6 +8,7 @@
 
 #include "core/audio.h"
 #include "engine/source_hub.h"
+#include "omthx/omthx.h"
 
 static std::shared_ptr<ob::Frame> makeFrame(int w, int h) {
   auto f = std::make_shared<ob::Frame>();
@@ -142,4 +143,15 @@ TEST_CASE("the hub keeps only the newest audio packet") {
   REQUIRE(hub.latestAudio().get() != nullptr);
   CHECK(hub.latestAudio()->timestamp == 2);
   CHECK(hub.audioFramesPublished() == 2u);
+}
+
+TEST_CASE("a coded-only frame skips the opaque-alpha gate and keeps its format") {
+  ob::SourceHub hub("s1");
+  auto f = std::make_shared<ob::Frame>();
+  f->format = ob::VideoFormat{4, 2, 60, 1, true};
+  f->coded = std::make_shared<omthx::CodedFrame>();
+  hub.storeFrame(f);
+  REQUIRE(hub.latest().get() != nullptr);
+  CHECK(hub.latest()->codedOnly());
+  CHECK(hub.latest()->format.alpha);  // the source still has alpha; there is just no picture to scan
 }

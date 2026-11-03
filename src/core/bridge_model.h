@@ -110,4 +110,8 @@ struct Bridge {
   std::string advertisedName(const Output& o) const;
 };
 
+// True when `o` takes a coded frame of `sourceFamily` as it is: the same family, not NDI, and not an
+// output that must drop alpha from a source that has it (design 3.3).
+bool passesThrough(const Output& o, OutputTarget sourceFamily, bool sourceAlpha);
+
 }  // namespace ob

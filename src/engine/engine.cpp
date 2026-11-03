@@ -186,7 +186,7 @@ void Engine::startAdapter(const std::string& id) {
   }
   auto src = std::make_unique<OmtSource>(
       s->address,
-      [this, id](std::shared_ptr<Frame> f) { graph_.publish(id, std::move(f)); },
+      [this, id](std::shared_ptr<Frame> f) { return graph_.publish(id, std::move(f)); },
       [this, id](SignalState st, std::optional<ErrorInfo> e) {
         std::lock_guard l(runtimeMu_);
         auto& rt = sourceRuntime_[id];
@@ -197,6 +197,9 @@ void Engine::startAdapter(const std::string& id) {
           rt.error.clear();
       },
       [this, id](std::shared_ptr<AudioFrame> a) { graph_.publishAudio(id, std::move(a)); },
+      [this, id](bool hx, bool alpha) {
+        return graph_.pictureWanted(id, hx ? OutputTarget::OmtHx : OutputTarget::Omt, alpha);
+      },
       previewOnly);
   adapters_[id] = std::move(src);
   adapters_[id]->start();

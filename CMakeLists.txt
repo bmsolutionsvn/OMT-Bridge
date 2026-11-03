@@ -103,6 +103,7 @@ add_executable(ob_tests
   tests/source_hub_test.cpp
   tests/output_row_test.cpp
   tests/omt_sink_test.cpp
+  tests/omt_source_test.cpp
   tests/bridge_graph_test.cpp
   tests/alpha_gate_test.cpp
   tests/alpha_convert_test.cpp

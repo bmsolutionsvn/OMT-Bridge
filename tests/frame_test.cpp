@@ -48,6 +48,21 @@ TEST_CASE("valid() accepts an alpha frame and rejects a degenerate height") {
   CHECK_FALSE(f.valid());
 }
 
+TEST_CASE("a frame with coded data but no picture is not valid") {
+  auto coded = std::make_shared<omthx::CodedFrame>();
+  coded->format = omthx::VideoFormat{4, 2, 60, 1, false};
+  coded->data = {1, 2, 3};
+  ob::Frame f;
+  f.format = ob::VideoFormat{4, 2, 60, 1, false};
+  f.coded = coded;
+  CHECK(f.codedOnly());
+  CHECK_FALSE(f.valid());  // no UYVY picture to hand a picture consumer
+
+  f.uyvy.assign(f.lumaBytes(), 0x10);
+  CHECK_FALSE(f.codedOnly());
+  CHECK(f.valid());
+}
+
 TEST_CASE("the linked omthx exports the UYVY API") {
   // The pinned OMT-HX (ae96aa1) contains sendVideoUyvy and PixelFormat::Coded. Spelling the
   // signature pins it, and the pointer-to-member forces the linker to resolve the symbol.
