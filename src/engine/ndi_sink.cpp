@@ -64,6 +64,13 @@ void NdiSink::openLocked() {
 void NdiSink::deliver(const std::shared_ptr<const Frame>& frame) {
   if (!frame || !frame->valid()) return;  // never index a plane the frame does not have
   std::lock_guard l(mu_);
+  if (frame->layout == Layout::Nv12) {
+    // NDI takes limited-range NV12 as it is; the frame's one conversion is shared with the OMT sinks.
+    const auto limited = frame->limitedNv12();
+    if (!limited) return;
+    sendNv12(frame->format, limited->data(), frame->timestamp);
+    return;
+  }
   // No sender (open failed): send() drops the frame. The decision is still made here so the
   // test seam sees it, matching OmtSink.
   const bool alpha = frame->format.alpha && config_.alpha != AlphaMode::Off;
@@ -94,6 +101,24 @@ void NdiSink::send(const Frame& frame, bool alpha) {
   v.timestamp = frame.timestamp;
   // Without alpha this is the UYVY plane alone: the SDK sends line_stride * yres bytes.
   v.line_stride_in_bytes = frame.format.width * 2;
+  NDIlib_send_send_video_v2(sender_->send, &v);
+}
+
+void NdiSink::sendNv12(const VideoFormat& format, const uint8_t* data, int64_t timestamp) {
+  if (!sender_ || !sender_->send) return;
+  NDIlib_video_frame_v2_t v;
+  v.xres = format.width;
+  v.yres = format.height;
+  v.FourCC = NDIlib_FourCC_video_type_NV12;  // Y then interleaved UV, both rows `width` bytes
+  v.frame_rate_N = format.fpsN;
+  v.frame_rate_D = format.fpsD;
+  v.picture_aspect_ratio = 0.0f;  // square pixels
+  v.frame_format_type = NDIlib_frame_format_type_progressive;
+  v.timecode = NDIlib_send_timecode_synthesize;
+  v.p_data = const_cast<uint8_t*>(data);
+  v.p_metadata = nullptr;
+  v.timestamp = timestamp;
+  v.line_stride_in_bytes = format.width;
   NDIlib_send_send_video_v2(sender_->send, &v);
 }
 

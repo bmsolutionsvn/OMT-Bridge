@@ -43,6 +43,10 @@ class OmtSink : public Sink {
                     bool premultiplied, int64_t timestamp);
   // A coded frame sent on untouched, for a pass-through output. Called with mu_ held.
   virtual void sendCoded(const omthx::CodedFrame& frame);
+  // An NV12 picture: the frame's own planes (fullRange) for an OMT-HX output, the frame's one
+  // limited-range conversion for plain OMT. Called with mu_ held.
+  virtual void sendNv12(const VideoFormat& format, const uint8_t* y, const uint8_t* uv, bool fullRange,
+                        int64_t timestamp);
   // Same seam for audio; the test records rate, channels, timestamp and the sample count.
   virtual void sendAudio(std::span<const float> planar, int sampleRate, int channels,
                          int64_t timestamp);

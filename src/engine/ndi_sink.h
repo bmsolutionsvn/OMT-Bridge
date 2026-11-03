@@ -31,6 +31,8 @@ class NdiSink : public Sink {
  protected:
   // Called with mu_ held; overrides must not call a public method of NdiSink.
   virtual void send(const Frame& frame, bool alpha);
+  // An NV12 picture: already limited range, sent with no conversion. Called with mu_ held.
+  virtual void sendNv12(const VideoFormat& format, const uint8_t* data, int64_t timestamp);
   virtual void openLocked();
 
  private:
