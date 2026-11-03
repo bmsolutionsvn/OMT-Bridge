@@ -84,6 +84,10 @@ TEST_CASE("an NV12 frame is valid with the right bytes and no alpha") {
   f.nv12.assign(4u * 1u * 3u / 2u, 0x80);
   CHECK_FALSE(f.valid());
 
+  f.format = ob::VideoFormat{4, 3, 60, 1, false};  // odd height: chroma rows come in pairs
+  f.nv12.assign(4u * 3u * 3u / 2u, 0x80);
+  CHECK_FALSE(f.valid());
+
   f.format = ob::VideoFormat{4, 2, 60, 1, true};  // NV12 carries no alpha
   f.nv12.assign(4u * 2u * 3u / 2u, 0x80);
   CHECK_FALSE(f.valid());

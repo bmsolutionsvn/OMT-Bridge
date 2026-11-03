@@ -57,7 +57,7 @@ struct Frame {
   bool valid() const {
     if (format.width < 2 || format.height < 2 || format.width % 2 != 0) return false;
     if (layout == Layout::Nv12) {
-      if (format.alpha) return false;
+      if (format.alpha || format.height % 2 != 0) return false;
       return nv12.size() == static_cast<size_t>(format.width) * static_cast<size_t>(format.height) * 3u / 2u;
     }
     return uyvy.size() == lumaBytes() + alphaBytes();
