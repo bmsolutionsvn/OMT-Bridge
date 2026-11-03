@@ -35,6 +35,9 @@ void OmtSink::configure(const Output& output, const std::string& advertisedName)
   if (same) return;
   name_ = advertisedName;
   openLocked();
+  // A new output asks for a keyframe at once: its receivers joined mid-GOP. The test's openLocked
+  // override opens no sender, so this lives here rather than in openLocked.
+  if (config_.target != OutputTarget::Ndi) keyframeRequest_.store(true);
 }
 
 void OmtSink::openLocked() {
@@ -58,10 +61,24 @@ void OmtSink::openLocked() {
 }
 
 void OmtSink::deliver(const std::shared_ptr<const Frame>& frame) {
-  if (!frame || !frame->valid()) return;  // never index a plane the frame does not have
+  if (!frame) return;
   std::lock_guard l(mu_);
-
   frameNote_.clear();  // the label describes THIS frame
+
+  // A coded frame of this output's own family goes on untouched: no decode, no encode (design 3.3).
+  if (frame->coded) {
+    const OutputTarget family =
+        frame->coded->mode == omthx::Mode::Hx ? OutputTarget::OmtHx : OutputTarget::Omt;
+    if (passesThrough(config_, family, frame->coded->format.alpha)) {
+      useLane(true);
+      sendCoded(*frame->coded);
+      frameNote_ = "passed through";
+      return;
+    }
+  }
+  if (!frame->valid()) return;  // no picture to re-encode: a coded-only frame for another family
+  useLane(false);
+
   const bool hadAlpha = frame->format.alpha;
   bool alpha = hadAlpha && config_.alpha != AlphaMode::Off;
   if (hadAlpha && config_.alpha == AlphaMode::Off) {
@@ -99,6 +116,32 @@ void OmtSink::send(const VideoFormat& format, const uint8_t* uyvy, bool alpha, b
   const int alphaStride = static_cast<int>(format.width);
   sender_->sender->sendVideoUyvy(vf, uyvy, format.width * 2, plane, alphaStride, premultiplied,
                                  timestamp);
+}
+
+void OmtSink::useLane(bool coded) {
+  if (haveLane_ && laneCoded_ != coded) {
+    // A sender must not mix coded frames with pictures (omthx.h), and the two lanes number frames
+    // differently. A new sender starts a new stream, whose first frame is a keyframe.
+    openLocked();
+    keyframeRequest_.store(true);
+  }
+  haveLane_ = true;
+  laneCoded_ = coded;
+}
+
+void OmtSink::sendCoded(const omthx::CodedFrame& frame) {
+  if (!sender_ || !sender_->sender) return;
+  sender_->sender->sendCoded(frame);
+  // The sender forwards what its receivers ask for; the source answers on its next frame.
+  if (sender_->sender->keyframeRequested()) keyframeRequest_.store(true);
+}
+
+bool OmtSink::takeKeyframeRequest() { return keyframeRequest_.exchange(false); }
+
+std::string OmtSink::senderAddress() const {
+  std::lock_guard l(mu_);
+  if (!sender_ || !sender_->sender) return {};
+  return sender_->sender->address();
 }
 
 std::string OmtSink::note() const {

@@ -1,6 +1,7 @@
 #pragma once
 // One OMT or OMT-HX output (design 8, 9.3). Each row owns its own omthx::Sender, so a new output
 // joins cleanly and a keyframe is forced on its first frame by the library.
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -10,6 +11,10 @@
 #include "core/bridge_model.h"
 #include "core/frame.h"
 #include "engine/output_row.h"
+
+namespace omthx {
+struct CodedFrame;
+}
 
 namespace ob {
 
@@ -27,6 +32,8 @@ class OmtSink : public Sink {
   void deliverAudio(const std::shared_ptr<const AudioFrame>& frame) override;
   std::string note() const override;
   SinkStats stats() const override;
+  // True once after a downstream receiver asked for a keyframe, or a new output opened.
+  bool takeKeyframeRequest() override;
 
  protected:
   // Both virtuals are called with mu_ held. An override must not call any public method of
@@ -34,18 +41,30 @@ class OmtSink : public Sink {
   // Overridden by the test to observe the decision without opening a sender.
   virtual void send(const VideoFormat& format, const uint8_t* uyvy, bool alpha,
                     bool premultiplied, int64_t timestamp);
+  // A coded frame sent on untouched, for a pass-through output. Called with mu_ held.
+  virtual void sendCoded(const omthx::CodedFrame& frame);
   // Same seam for audio; the test records rate, channels, timestamp and the sample count.
   virtual void sendAudio(std::span<const float> planar, int sampleRate, int channels,
                          int64_t timestamp);
   // Overridden by the test so configure() opens no network sender.
   virtual void openLocked();
 
+  // The address this output's sender advertises, or empty while it has no sender. For tests that
+  // join it with a Receiver, which needs the address, not the name.
+  std::string senderAddress() const;
+
  private:
+  // Tracks and, on a change, reopens the sender: it must not mix coded frames with pictures.
+  void useLane(bool coded);
+
   mutable std::mutex mu_;
   Output config_;
   std::string name_;
   std::string openNote_;   // NDI / open failure: outlives per-frame labels
   std::string frameNote_;  // this frame's decision
+  bool haveLane_ = false;
+  bool laneCoded_ = false;  // the sender's last frame was coded (sendCoded), not a picture
+  std::atomic<bool> keyframeRequest_{false};
   std::unique_ptr<OmtSenderHolder> sender_;
 };
 
