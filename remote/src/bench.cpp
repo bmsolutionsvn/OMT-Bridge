@@ -37,10 +37,10 @@ void setStreamId(SRTSOCKET s, const std::string& id) {
 }
 
 void connectTo(SRTSOCKET s, const BenchConfig& cfg) {
-  auto addr = makeAddr(cfg.host, cfg.port);
+  auto addr = makeAddr(cfg.host.empty() ? "127.0.0.1" : cfg.host, cfg.port);
   if (srt_connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof addr) == SRT_ERROR)
-    throw std::runtime_error("connect " + cfg.host + ":" + std::to_string(cfg.port) + ": " +
-                             srt_getlasterror_str());
+    throw std::runtime_error("connect " + (cfg.host.empty() ? "127.0.0.1" : cfg.host) + ":" +
+                             std::to_string(cfg.port) + ": " + srt_getlasterror_str());
 }
 
 void csvRow(std::ostream& out, double t, const SrtStats& st, int64_t gaps, int64_t sndDrop) {
@@ -123,7 +123,8 @@ int runSend(const BenchConfig& cfg, std::ostream& log) {
       ok = false;
     }
     if (!ok) {
-      log << "RTT probe failed: no reply from " << cfg.host << ":" << cfg.port << "\n";
+      log << "RTT probe failed: no reply from " << (cfg.host.empty() ? "127.0.0.1" : cfg.host) << ":"
+          << cfg.port << "\n";
       return 2;
     }
     latencyMs = std::max(120, static_cast<int>(std::lround(cfg.latencyRttFactor.value() * rtt)));
@@ -189,7 +190,12 @@ int runSend(const BenchConfig& cfg, std::ostream& log) {
   }
 
   const double elapsed = std::max(0.001, secondsSince(start));
-  const SrtStats st = statsOf(sock.s, false);
+  SrtStats st{};
+  try {
+    st = statsOf(sock.s, false);
+  } catch (const std::exception&) {
+    // The receiver may close at the same moment the run ends; the send is still complete.
+  }
   const double mbps = static_cast<double>(bytes) * 8.0 / elapsed / 1e6;
   const double rttAvg = rttCount > 0 ? rttSum / rttCount : st.rttMs;
   writeSummary(log, cfg, latencyMs, mbps, st, 0, sndDrop, rttAvg);

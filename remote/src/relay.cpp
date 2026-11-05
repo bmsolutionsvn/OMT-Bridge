@@ -63,30 +63,34 @@ struct Relay::Impl {
       srt_setrejectreason(ns, SRT_REJX_BAD_REQUEST);
       return -1;
     }
-    std::lock_guard lock(self->mu);
-    if (!self->cfg.token.empty() && id->token != self->cfg.token) {
-      srt_setrejectreason(ns, SRT_REJX_UNAUTHORIZED);
-      return -1;
+    int reject = 0;
+    {
+      // Never call into libsrt while holding mu: the handshake itself runs under SRT's own lock.
+      std::lock_guard lock(self->mu);
+      if (!self->cfg.token.empty() && id->token != self->cfg.token) {
+        reject = SRT_REJX_UNAUTHORIZED;
+      } else if (id->mode == StreamMode::Publish) {
+        const auto now = Clock::now();
+        for (auto it = self->pendingPublish.begin(); it != self->pendingPublish.end();) {
+          if (now - it->second > std::chrono::seconds(5)) it = self->pendingPublish.erase(it);
+          else ++it;
+        }
+        const std::string res = resourceOf(*id);
+        const auto sit = self->sessions.find(res);
+        const bool taken = (sit != self->sessions.end() && sit->second.publisher != SRT_INVALID_SOCK) ||
+                           self->pendingPublish.count(res) > 0;
+        if (taken) {
+          reject = SRT_REJX_CONFLICT;
+        } else if (self->cfg.maxTotalMbps > 0 && self->totalMbps >= self->cfg.maxTotalMbps) {
+          reject = SRT_REJX_OVERLOAD;
+        } else {
+          self->pendingPublish[res] = now;
+        }
+      }
     }
-    if (id->mode == StreamMode::Publish) {
-      const auto now = Clock::now();
-      for (auto it = self->pendingPublish.begin(); it != self->pendingPublish.end();) {
-        if (now - it->second > std::chrono::seconds(5)) it = self->pendingPublish.erase(it);
-        else ++it;
-      }
-      const std::string res = resourceOf(*id);
-      const auto sit = self->sessions.find(res);
-      const bool taken = (sit != self->sessions.end() && sit->second.publisher != SRT_INVALID_SOCK) ||
-                         self->pendingPublish.count(res) > 0;
-      if (taken) {
-        srt_setrejectreason(ns, SRT_REJX_CONFLICT);
-        return -1;
-      }
-      if (self->cfg.maxTotalMbps > 0 && self->totalMbps >= self->cfg.maxTotalMbps) {
-        srt_setrejectreason(ns, SRT_REJX_OVERLOAD);
-        return -1;
-      }
-      self->pendingPublish[res] = now;
+    if (reject != 0) {
+      srt_setrejectreason(ns, reject);
+      return -1;
     }
     return 0;
   }
@@ -126,20 +130,25 @@ struct Relay::Impl {
   }
 
   void closeAll() {
-    std::lock_guard lock(mu);
-    for (auto& [sock, res] : resourceOfSocket) srt_close(sock);  // srt_close unregisters from epoll
-    resourceOfSocket.clear();
-    modeOfSocket.clear();
-    sessions.clear();
-    pendingPublish.clear();
-    if (listener != SRT_INVALID_SOCK) {
-      srt_close(listener);
+    std::vector<SRTSOCKET> toClose;
+    SRTSOCKET lst = SRT_INVALID_SOCK;
+    int ep = -1;
+    {
+      std::lock_guard lock(mu);
+      for (auto& [sock, res] : resourceOfSocket) toClose.push_back(sock);
+      resourceOfSocket.clear();
+      modeOfSocket.clear();
+      sessions.clear();
+      pendingPublish.clear();
+      lst = listener;
       listener = SRT_INVALID_SOCK;
-    }
-    if (epfd >= 0) {
-      srt_epoll_release(epfd);
+      ep = epfd;
       epfd = -1;
     }
+    // No libsrt call while mu is held (see onHandshake); srt_close unregisters from the epoll.
+    for (const SRTSOCKET s : toClose) srt_close(s);
+    if (lst != SRT_INVALID_SOCK) srt_close(lst);
+    if (ep >= 0) srt_epoll_release(ep);
   }
 
   void loop() {
@@ -219,7 +228,6 @@ struct Relay::Impl {
     }
 
     std::vector<SRTSOCKET> targets;
-    std::vector<SRTSOCKET> dead;
     {
       std::lock_guard lock(mu);
       const auto rit = resourceOfSocket.find(s);
@@ -237,33 +245,47 @@ struct Relay::Impl {
       } else if (mode == StreamMode::Publish) {
         targets = session.requesters;
       }
-      for (const SRTSOCKET t : targets) {
-        if (srt_sendmsg2(t, buf.data(), n, nullptr) == SRT_ERROR) {
-          if (srt_getlasterror(nullptr) != SRT_EASYNCSND) dead.push_back(t);
-        } else {
-          session.bytesOut += n;
-        }
+    }
+
+    // Send without mu held: libsrt must never be entered from under our lock.
+    int64_t sent = 0;
+    std::vector<SRTSOCKET> dead;
+    for (const SRTSOCKET t : targets) {
+      if (srt_sendmsg2(t, buf.data(), n, nullptr) == SRT_ERROR) {
+        if (srt_getlasterror(nullptr) != SRT_EASYNCSND) dead.push_back(t);
+      } else {
+        sent += n;
+      }
+    }
+    if (sent > 0) {
+      std::lock_guard lock(mu);
+      const auto rit = resourceOfSocket.find(s);
+      if (rit != resourceOfSocket.end()) {
+        const auto sit = sessions.find(rit->second);
+        if (sit != sessions.end()) sit->second.bytesOut += sent;
       }
     }
     for (const SRTSOCKET t : dead) removeSocket(t);
   }
 
   void removeSocket(SRTSOCKET s) {
-    std::lock_guard lock(mu);
-    const auto rit = resourceOfSocket.find(s);
-    if (rit != resourceOfSocket.end()) {
-      const auto sit = sessions.find(rit->second);
-      if (sit != sessions.end()) {
-        auto& session = sit->second;
-        if (session.publisher == s) session.publisher = SRT_INVALID_SOCK;
-        session.requesters.erase(
-            std::remove(session.requesters.begin(), session.requesters.end(), s), session.requesters.end());
-        session.hub.erase(std::remove(session.hub.begin(), session.hub.end(), s), session.hub.end());
-        if (session.publisher == SRT_INVALID_SOCK && session.requesters.empty() && session.hub.empty())
-          sessions.erase(sit);
+    {
+      std::lock_guard lock(mu);
+      const auto rit = resourceOfSocket.find(s);
+      if (rit != resourceOfSocket.end()) {
+        const auto sit = sessions.find(rit->second);
+        if (sit != sessions.end()) {
+          auto& session = sit->second;
+          if (session.publisher == s) session.publisher = SRT_INVALID_SOCK;
+          session.requesters.erase(
+              std::remove(session.requesters.begin(), session.requesters.end(), s), session.requesters.end());
+          session.hub.erase(std::remove(session.hub.begin(), session.hub.end(), s), session.hub.end());
+          if (session.publisher == SRT_INVALID_SOCK && session.requesters.empty() && session.hub.empty())
+            sessions.erase(sit);
+        }
+        resourceOfSocket.erase(s);
+        modeOfSocket.erase(s);
       }
-      resourceOfSocket.erase(s);
-      modeOfSocket.erase(s);
     }
     srt_close(s);  // srt_close unregisters it from the epoll
   }

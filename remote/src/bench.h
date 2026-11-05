@@ -12,7 +12,7 @@ namespace bmb {
 
 struct BenchConfig {
   std::string role = "send";  // send | recv
-  std::string host = "127.0.0.1";
+  std::string host;           // empty: connect to 127.0.0.1, listen on 0.0.0.0
   int port = 7000;
   std::string streamId;
   int64_t bitrateBps = 10'000'000;
