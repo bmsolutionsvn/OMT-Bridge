@@ -125,6 +125,9 @@ target_link_libraries(ob_tests PRIVATE ob_engine)
 target_link_libraries(ob_tests PRIVATE ob_shell)
 ob_copy_runtime(ob_tests)
 
+# ---- remote (srt-bench / bmb-relay, also builds on its own with -S remote) ----
+add_subdirectory(remote)
+
 # ---- shells ----
 add_executable(omt-bridge-engine src/engine/engine_main.cpp)
 target_link_libraries(omt-bridge-engine PRIVATE ob_engine)
