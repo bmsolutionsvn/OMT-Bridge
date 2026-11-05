@@ -98,7 +98,7 @@ back on its own while the studio's outputs keep running.
   told apart by SRT's stream ID: `bmb/<session>/<from-bridge>/<source-id>`.
 - **One control connection** (SRT message mode, stream ID `bmb/<session>/<bridge>/control`):
   hello and key proof, the shared-source list, subscribe / unsubscribe, tally, keyframe requests,
-  link stats, small thumbnails and Peek requests (§5.3).
+  link stats, small thumbnails (§5.3).
 - A source's stream carries `omthx::CodedFrame`s as they are (codec, timestamps, keyframe flag,
   data), plus its audio as received (OMT PCM) and its metadata. One SRT message per frame part;
   the receiver rebuilds frames and timestamps.
@@ -129,9 +129,7 @@ back on its own while the studio's outputs keep running.
   - a source already streaming at the sharing side (consumed there or over the link) sends a
     small JPEG every 2 s from frames it already has (one hardware keyframe decode for OMT-HX),
     and only while the other side has its Remote panel open;
-  - an idle source shows its name and "idle", with a **Peek** button: Peek connects for about
-    3 s, takes one picture (plain OMT uses libomt's `OMTReceiveFlags_Preview`, the 1/8 VMX
-    preview), disconnects, and the camera goes idle again **(call: the 3 s)**.
+  - an idle source shows its name and "idle", with no picture **(owner: no Peek)**.
 - **Tally** follows the existing rule (a source is on air when an output it feeds is on air) and
   crosses the link back to the sharing side, so the camera's tally lights at the venue. Program
   and preview both cross, as OMT carries both **(call)**.
@@ -210,5 +208,4 @@ so it adds no delay.
   OMT-HX in → remote → OMT-HX out byte-identical frames; tally round trip; keyframe recovery after
   a forced drop; reconnect after killing the link; demand-driven start / stop; wrong key refused;
   a shared source is advertised on the far side and a receiver connecting to it starts the
-  stream; an idle source's thumbnail and the list never connect to the source; Peek connects
-  once and lets go.
+  stream; the source list and an idle source's panel entry never connect to the source.
