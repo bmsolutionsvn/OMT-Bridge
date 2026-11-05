@@ -31,6 +31,8 @@ endif()
 add_library(bmb_net STATIC
   src/stream_id.cpp
   src/srt_util.cpp
+  src/bench_payload.cpp
+  src/bench.cpp
 )
 target_include_directories(bmb_net PUBLIC src)
 target_link_libraries(bmb_net PUBLIC ${BMB_SRT_TARGET})
@@ -39,7 +41,12 @@ add_executable(remote_tests
   tests/main.cpp
   tests/stream_id_test.cpp
   tests/srt_util_test.cpp
+  tests/bench_test.cpp
 )
 target_link_libraries(remote_tests PRIVATE bmb_net ${BMB_DOCTEST_TARGET})
 # Keep the programs in the build root: scripts/test.ps1 and BENCHMARK.md run them from there.
 set_target_properties(remote_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
+add_executable(srt-bench apps/srt_bench.cpp)
+target_link_libraries(srt-bench PRIVATE bmb_net)
+set_target_properties(srt-bench PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
