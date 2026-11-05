@@ -1,0 +1,10 @@
+services:
+  bmb-relay:
+    build:
+      context: ../..
+      dockerfile: remote/docker/Dockerfile
+    image: bmb-remote
+    ports:
+      - "7000:7000/udp"
+    env_file: .env
+    restart: unless-stopped

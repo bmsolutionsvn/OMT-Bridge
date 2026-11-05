@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 3.28)
+# 3.25 is Debian bookworm's cmake; the top-level Windows tree requires 3.28.
+cmake_minimum_required(VERSION 3.25)
 project(BMBRemote LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
